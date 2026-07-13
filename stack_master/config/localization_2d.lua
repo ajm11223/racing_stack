@@ -16,6 +16,12 @@ MAP_BUILDER.num_background_threads = 6        -- mapping: 4
 -- ===== front-end: shorter range, cheaper matching on a known track =====
 TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 0.1 -- mapping: default 40
 
+-- Match on half a scan instead of a full one: correction period 25 ms -> 12.5 ms
+-- (UST 40 Hz, 10 subdivisions/scan). At 7 m/s this also halves the per-match
+-- displacement (~0.17 m -> ~0.09 m), keeping it inside the online correlative
+-- matcher's 0.1 m linear search window. Costs CPU; watch match scores.
+TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 5 -- mapping: 10 (full scan)
+
 -- ===== back-end: pure localization =====
 TRAJECTORY_BUILDER.pure_localization_trimmer = {
   max_submaps_to_keep = 3,

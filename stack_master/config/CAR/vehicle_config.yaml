@@ -34,12 +34,16 @@ vesc/**:
     duty_cycle_min: 0.0
     position_max: 0.0
     position_min: 0.0
-    servo_max: 1.0
-    servo_min: 0.0
+    servo_max: 0.85
+    servo_min: 0.10
     speed_max: 23250.0
     speed_min: -23250.0
-    speed_to_erpm_gain: 4614.0
+    #이론적인 07.07 erpm: 2873.0
+    #수정 전 speed_to_erpm_gain: 2840.0
+    speed_to_erpm_gain: 2873.0 #안정민 0713 수정
     speed_to_erpm_offset: 0.0
-    steering_angle_to_servo_gain: -1.2135
-    steering_angle_to_servo_offset: 0.5304
+    #수정 전 steering_angle_to_servo_gain: 0.52
+    steering_angle_to_servo_gain: 0.4679 #안정민 0713 수정
+    #수정 전 steering_angle_to_servo_offset: 0.475 오른쪽으로 가는 경향이 심했음
+    steering_angle_to_servo_offset: 0.48497 #안정민 0713 수정
     use_servo_cmd_to_calc_angular_velocity: true
