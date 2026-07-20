@@ -9,7 +9,7 @@
     base_link_to_laser:
       parent: base_link
       child: laser
-      xyz: [0.27, 0.0, 0.11]        # metres
+      xyz: [0.187675, 0.675, 0.12]        # metres,vesc와의 offset #변경 전 xyz: [0.27, 0.0, 0.11]
       rpy: [0.0, 0.0, 0.0]          # roll, pitch, yaw [rad]
 
     # VESC IMU mounting, split so each quantity is specified ONCE (no redundant

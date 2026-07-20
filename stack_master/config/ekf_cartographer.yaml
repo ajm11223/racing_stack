@@ -15,7 +15,7 @@ ekf_localization:
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  false, false,
-                   false, false, true,
+                   false, false, false,
                    false, false, false]
     odom0_differential: false
 
@@ -27,3 +27,19 @@ ekf_localization:
                    false, false, false,
                    false, false, false]
     odom1_differential: false
+
+    # VESC IMU: yaw rate (gyro z) only, replaces vesc_odom's kinematic vyaw.
+    imu0: /vesc/sensors/imu
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_queue_size: 10
+
+# 순서 x,y,z
+    # roll,pitch,yaw
+    # vx,vy,vz
+    # vroll,vpitch,vyaw
+    # ax,ay,az
