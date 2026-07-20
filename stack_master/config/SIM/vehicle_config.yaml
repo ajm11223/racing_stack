@@ -34,12 +34,15 @@ vesc/**:
     duty_cycle_min: 0.0
     position_max: 0.0
     position_min: 0.0
-    servo_max: 1.0
-    servo_min: 0.0
-    speed_max: 23250.0
-    speed_min: -23250.0
-    speed_to_erpm_gain: 4614.0
+    servo_max: 1.0 #0.88497
+    servo_min: 0.0 #0.08497
+    speed_max: 45968.0  #23250
+    speed_min: -45968.0
+    #이론적인 07.07 erpm: 2873.0
+    #수정 전 speed_to_erpm_gain: 2840.0
+    speed_to_erpm_gain: 2873.0 #0716 2873.0 #0717 erpm 게인 수정, 본인 속도를 빠르다 생각해서 게인 높여줌, 그 결과 고속에서 로컬라이제이션 시 선속도 일치하게 됨
     speed_to_erpm_offset: 0.0
-    steering_angle_to_servo_gain: -1.2135
-    steering_angle_to_servo_offset: 0.5304
+    steering_angle_to_servo_gain: 0.49
+    #수정 전 steering_angle_to_servo_offset: 0.475 오른쪽으로 가는 경향이 심했음 0.48497
+    steering_angle_to_servo_offset: 0.47892 #07.15 수정
     use_servo_cmd_to_calc_angular_velocity: true

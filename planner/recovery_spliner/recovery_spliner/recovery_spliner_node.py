@@ -177,7 +177,13 @@ class ObstacleSpliner(Node):
         self.map_filter = GridFilter(node=self, map_topic="/map", debug=False)
         self.map_filter.set_erosion_kernel_size(self.kernel_size)
 
-        # Main loop at 40 Hz
+        # Main loop at 40 Hz. The pose-dependent spline fit is this node's dominant
+        # cost, so recompute only every spline_decim ticks (40 Hz / 4 = 10 Hz) and
+        # republish the cached result in between; a <=100 ms old recovery path is
+        # fine (controller re-samples, SM re-anchors continuously).
+        self.spline_decim = 4
+        self._decim = -1
+        self._last_wpnts = None
         self.create_timer(1.0 / 40.0, self.loop)
         self.get_logger().info(f"[{self.name}] Ready!")
 
@@ -331,6 +337,19 @@ class ObstacleSpliner(Node):
     # MAIN LOOP #
     #############
     def loop(self):
+        # Decimate the expensive spline recompute to 10 Hz; between recomputes
+        # republish the last result with a fresh stamp so consumers still see 40 Hz.
+        self._decim = (self._decim + 1) % self.spline_decim
+        if self._decim != 0 and self._last_wpnts is not None:
+            now = self.get_clock().now().to_msg()
+            self._last_wpnts.header.stamp = now
+            self._last_blended.header.stamp = now
+            self.recovery_wpnts_pub.publish(self._last_wpnts)
+            self.mrks_pub.publish(self._last_mrks)
+            self.ot_blended_wpnts_pub.publish(self._last_blended)
+            self.ot_blended_mrks_pub.publish(self._last_blended_mrks)
+            return
+
         if self.measuring:
             start = time.perf_counter()
         # Sample data
@@ -373,6 +392,12 @@ class ObstacleSpliner(Node):
         blended_del.action = Marker.DELETEALL
         blended_mrks.markers.insert(0, blended_del)
         self.ot_blended_mrks_pub.publish(blended_mrks)
+
+        # Cache for decimated republish on the skipped ticks.
+        self._last_wpnts = wpnts
+        self._last_mrks = mrks
+        self._last_blended = blended
+        self._last_blended_mrks = blended_mrks
 
     #########
     # UTILS #
