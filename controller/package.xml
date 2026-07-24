@@ -19,6 +19,8 @@
   <depend>tf_transformations</depend>
   <depend>f110_msgs</depend>
   <depend>frenet_conversion</depend>
+  <!-- MAP variant (map_controller_manager) soft-imports this at runtime -->
+  <exec_depend>steering_lookup</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

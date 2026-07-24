@@ -10,14 +10,24 @@ ekf_localization:
     base_link_frame: base_link
     world_frame    : map        # absolute pose in map frame
 
-    # VESC wheel odometry: use twist only (vx, vyaw)
+    # VESC wheel odometry: use longitudinal velocity only (vx)
     odom0: /vesc/odom
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  false, false,
-                   false, false, true,
+                   false, false, false,
                    false, false, false]
     odom0_differential: false
+
+    # VESC IMU: use yaw rate (gyro z) instead of the steering-model yaw rate
+    # published by /vesc/odom.
+    imu0: /vesc/sensors/imu
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  true, false, false]
+    imu0_differential: false
 
     # Cartographer tracked pose (converted PoseStamped → Odometry): use position + yaw
     odom1: /tracked_pose/odom

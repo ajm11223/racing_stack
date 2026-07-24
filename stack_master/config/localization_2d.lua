@@ -20,7 +20,7 @@ TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 0.1 -- mapping: defau
 -- (UST 40 Hz, 10 subdivisions/scan). At 7 m/s this also halves the per-match
 -- displacement (~0.17 m -> ~0.09 m), keeping it inside the online correlative
 -- matcher's 0.1 m linear search window. Costs CPU; watch match scores.
-TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 5 -- mapping: 10 (full scan)
+-- TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 5 -- mapping: 10 (full scan)
 
 -- ===== back-end: pure localization =====
 TRAJECTORY_BUILDER.pure_localization_trimmer = {
@@ -31,6 +31,5 @@ POSE_GRAPH.optimize_every_n_nodes = 3         -- mapping: 100; should be low for
 POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.linear_search_window = 2.  -- default: 7
 POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.angular_search_window = math.rad(30.)
 POSE_GRAPH.constraint_builder.sampling_ratio = 0.3
-
 
 return options

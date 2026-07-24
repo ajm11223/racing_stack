@@ -17,7 +17,16 @@ def calc_vel_profile(ax_max_machines: np.ndarray,
                      mu: np.ndarray = None,
                      v_start: float = None,
                      v_end: float = None,
-                     filt_window: int = None) -> np.ndarray:
+                     filt_window: int = None,
+                     mu_rqt_scale: float = 1.0,
+                     dyn_model_exp_rqt: float = None  ) -> np.ndarray:
+    
+    if dyn_model_exp_rqt is not None:
+        dyn_model_exp = dyn_model_exp_rqt
+    if mu is None:
+        mu = np.ones(kappa.size) * mu_rqt_scale
+    else:
+        mu = mu * mu_rqt_scale    
     """
     author:
     Alexander Heilmeier

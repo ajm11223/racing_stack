@@ -22,7 +22,7 @@ options = {
   trajectory_builder = TRAJECTORY_BUILDER,
   map_frame = "map",
   tracking_frame = "vesc_imu_rot", --set as imu_frame
-  use_odometry = false,
+  use_odometry = true,
 
   -- ===== TF publishing =====
   -- Consumed by node.cpp PublishLocalTrajectoryData. With publish_to_tf = false
@@ -65,7 +65,7 @@ TRAJECTORY_BUILDER_2D.missing_data_ray_length = 5.
 
 TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 10
 TRAJECTORY_BUILDER_2D.min_z = -0.8
-TRAJECTORY_BUILDER_2D.max_z = 2.
+TRAJECTORY_BUILDER_2D.max_z = 2.0
 
 TRAJECTORY_BUILDER_2D.voxel_filter_size = 0.025
 TRAJECTORY_BUILDER_2D.adaptive_voxel_filter.max_length = 0.5

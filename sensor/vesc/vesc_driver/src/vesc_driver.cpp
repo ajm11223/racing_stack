@@ -266,6 +266,9 @@ void VescDriver::vescPacketCallback(const std::shared_ptr<VescPacket const> & pa
     std_imu_msg.orientation.y = imuData->q_y();
     std_imu_msg.orientation.z = imuData->q_z();
 
+    // Yaw-rate covariance (angular velocity z).
+    std_imu_msg.linear_acceleration_covariance[0] = 0.001199237;
+    std_imu_msg.angular_velocity_covariance[8] = 0.012923142;
 
     imu_pub_->publish(imu_msg);
     imu_std_pub_->publish(std_imu_msg);

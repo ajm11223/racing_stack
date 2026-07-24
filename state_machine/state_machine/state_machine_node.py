@@ -1137,6 +1137,9 @@ class StateMachine(Node):
             dyn_model_exp=self.pars["vel_calc_opts"]["dyn_model_exp"],
             v_start=self.cur_vs,
             v_end=v_end,
+
+            mu_rqt_scale=self.params.rqt_mu_scale,             
+            dyn_model_exp_rqt=self.params.rqt_dyn_exp
         )
 
         for i in range(len(vx_profile)):

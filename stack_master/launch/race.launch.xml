@@ -28,6 +28,13 @@
        description="WpntArray the controller follows: /local_waypoints (state-machine output w/ avoidance) or /global_waypoints (robust raceline)"/>
   <arg name="vis_lane_change" default="false"
        description="Show lane_change_planner's matplotlib lane-visualization window at startup (blocks on plt.show()); off by default"/>
+  <arg name="yaw_log" default="false"
+       description="Log the full VESC IMU (accel/gyro/rpy) vs /vesc/odom state while driving (imu_odom_compare_node; real car only — the /vesc topics don't exist in sim). CSV saved on shutdown."/>
+  <arg name="use_map" default="false"
+       description="Lateral control: false = original Pure-Pursuit controller (controller_manager exec, controller.yaml); true = separate MAP steering-lookup controller (map_controller_manager exec, controller_map.yaml). Two distinct execs so the pure-PP code stays untouched."/>
+  <arg name="lu_table" default="UNICORN2-0410"
+       description="MAP lookup table prefix (steering_lookup cfg). Ignored in sim: forced to SIM_linear so a real-car table is never used against sim physics."/>
+  <let name="lu_table" value="SIM_linear" if="$(var sim)"/>
   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
   <let name="racecar_version" value="SIM" if="$(var sim)"/>
   <let name="racecar_version" value="CAR" unless="$(var sim)"/>
@@ -109,9 +116,29 @@
        Subscribes /behavior_strategy + car state, publishes high_level/ackermann_cmd
        (-> simple_mux -> vehicle). Common controller.yaml; save_params writes back
        to the same file. -->
-  <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen">
+  <!-- use_map:=false (default): ORIGINAL pure-Pursuit controller, code + params
+       untouched (controller.yaml). -->
+  <node pkg="controller" exec="controller_manager" name="controller_manager" output="screen"
+        unless="$(var use_map)">
     <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
     <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
     <param name="sim" value="$(var sim)"/>
   </node>
+
+  <!-- use_map:=true: SEPARATE MAP steering-lookup controller (own exec + own
+       param file controller_map.yaml). Same node name so downstream topics are
+       identical; only one of the two runs at a time. lu_table forced to
+       SIM_linear in sim (see the <let> above). -->
+  <node pkg="controller" exec="map_controller_manager" name="controller_manager" output="screen"
+        if="$(var use_map)">
+    <param from="$(find-pkg-share stack_master)/config/controller_map.yaml"/>
+    <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller_map.yaml"/>
+    <param name="sim" value="$(var sim)"/>
+    <param name="use_map" value="true"/>
+    <param name="LU_table" value="$(var lu_table)"/>
+  </node>
+
+  <!-- Debug: live full VESC IMU vs /vesc/odom comparison + CSV log (yaw_log:=true) -->
+  <node pkg="stack_master" exec="imu_odom_compare_node.py" name="imu_odom_compare" output="screen"
+        if="$(var yaw_log)"/>
 </launch>

@@ -23,6 +23,10 @@ setup(
     entry_points={
         'console_scripts': [
             'controller_manager = controller.controller_manager:main',
+            # MAP (steering-lookup feedforward) variant, kept as a SEPARATE exec
+            # so the original pure-PP controller above stays untouched; launch
+            # picks one via use_map.
+            'map_controller_manager = controller.map_controller_manager:main',
         ],
     },
 )

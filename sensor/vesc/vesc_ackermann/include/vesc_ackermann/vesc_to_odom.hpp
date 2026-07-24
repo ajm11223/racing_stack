@@ -40,6 +40,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <vesc_msgs/msg/vesc_state_stamped.hpp>
 
@@ -67,20 +68,40 @@ private:
   double wheelbase_;
   bool publish_tf_;
 
+  // Adaptive wheel odometry: ERPM gain varies with filtered longitudinal
+  // acceleration to compensate acceleration-proportional wheel slip.
+  // See https://hmcl-unist.github.io/unicorn-racing/posts/adaptive-wheel-odometry/
+  bool adaptive_enabled_;
+  double adaptive_acceleration_gain_;   ///< slip coefficient multiplied by filtered ax
+  double adaptive_gain_offset_;         ///< constant-velocity slip correction
+  double adaptive_lpf_alpha_;           ///< LPF coefficient, 0 < alpha <= 1
+  double adaptive_minimum_gain_;        ///< lower bound keeping the divisor away from 0
+  double adaptive_max_abs_accel_;       ///< clamp for IMU spikes [m/s^2]
+  double adaptive_imu_timeout_;         ///< [s] fall back to fixed gain when IMU stale
+
   // odometry state
   double x_, y_, yaw_;
   Float64::SharedPtr last_servo_cmd_;  ///< Last servo position commanded value
   VescStateStamped::SharedPtr last_state_;  ///< Last received state message
 
+  // adaptive odometry state
+  bool imu_received_;
+  double filtered_ax_;        ///< low-pass filtered longitudinal acceleration
+  rclcpp::Time last_imu_time_;
+
   // ROS services
   rclcpp::Publisher<Odometry>::SharedPtr odom_pub_;
+  rclcpp::Publisher<Float64>::SharedPtr adaptive_gain_pub_;   ///< effective ERPM gain per state msg
+  rclcpp::Publisher<Float64>::SharedPtr filtered_accel_pub_;  ///< LPF'd longitudinal accel [m/s^2]
   rclcpp::Subscription<VescStateStamped>::SharedPtr vesc_state_sub_;
   rclcpp::Subscription<Float64>::SharedPtr servo_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_pub_;
 
   // ROS callbacks
   void vescStateCallback(const VescStateStamped::SharedPtr state);
   void servoCmdCallback(const Float64::SharedPtr servo);
+  void imuCallback(const sensor_msgs::msg::Imu::SharedPtr imu);
 
   // Dynamic reconfigure: apply gain/offset changes live (ros2 param set /
   // vesc_calibration), so the odom conversion tracks a retuned VESC mapping

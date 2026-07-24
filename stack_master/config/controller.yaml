@@ -21,8 +21,8 @@ controller_manager:
     curvature_factor: 0.2
     speed_factor_for_lat_err: 1.0
     speed_factor_for_curvature: 1.0
-    KP: 0.4
-    KI: 0.0
+    KP: 0.8
+    KI: 0.001
     KD: 0.055
     heading_error_thres: 10.0
     steer_gain_for_speed: 1.0

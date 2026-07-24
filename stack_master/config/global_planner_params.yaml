@@ -7,7 +7,7 @@ global_planner:
     test_on_car: True              # also set True if running from a bag
     required_laps: 1               # laps to drive before calculating global waypoints
     #safety_width: 1.0              # [m] incl. car width
-    safety_width: 1.0
+    safety_width: 1.2
     #safety_width_sp: 1.0           # [m] incl. car width, for shortest-path optimization
     safety_width_sp: 1.0
     occupancy_grid_threshold: 10

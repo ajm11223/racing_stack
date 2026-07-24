@@ -25,8 +25,8 @@ class SimpleMuxNode(Node):
         self.declare_parameter('scan_topic',                     '/scan')
         self.declare_parameter('odom_topic',                     '/vesc/odom')
         self.declare_parameter('rate_hz',                        50.0)
-        self.declare_parameter('joy_max_speed',                  4.0)
-        self.declare_parameter('joy_max_steer',                  0.4)
+        self.declare_parameter('joy_max_speed',                  8.0)
+        self.declare_parameter('joy_max_steer',                  0.4) #0713.수정
         self.declare_parameter('joy_freshness_threshold',        1.0)
         self.declare_parameter('servo_min',                      0.15)
         self.declare_parameter('servo_max',                      0.85)

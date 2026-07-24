@@ -151,6 +151,28 @@ class StateMachineParams:
         # ------------------------------------------------------------------ #
         # DYNAMIC PARAMETERS (replaces dyn_statemachine_tuner.cfg)
         # ------------------------------------------------------------------ #
+        # [RQT ì—°ë™ íŒŒíŠ¸ ì¶”ê°€ ì‹œìž‘] ë§ˆì°°ê³„ìˆ˜(mu) ë° ë§ˆì°°ì› ì§€ìˆ˜ ì‹¤ì‹œê°„ íŠœë‹
+        # ------------------------------------------------------------------ #
+        self._declare(
+            "rqt_mu_scale", 1.0,
+            ParameterDescriptor(
+                description="Scale factor for tire friction coefficient (mu)",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=0.1, to_value=2.0, step=0.05)],
+            ),
+        )
+        self.rqt_mu_scale: float = node.get_parameter("rqt_mu_scale").value
+
+        self._declare(
+            "rqt_dyn_exp", 1.0,
+            ParameterDescriptor(
+                description="Friction ellipse exponent override (dyn_model_exp)",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=1.0, to_value=2.0, step=0.05)],
+            ),
+        )
+        self.rqt_dyn_exp: float = node.get_parameter("rqt_dyn_exp").value
+        # ------------------------------------------------------------------ #
         self._declare(
             "lateral_width_gb_m", 0.3,
             ParameterDescriptor(
