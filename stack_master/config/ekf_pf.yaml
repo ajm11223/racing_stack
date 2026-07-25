@@ -1,0 +1,44 @@
+ekf_localization:
+  ros__parameters:
+    frequency: 100.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    publish_tf: true          # PF already publishes map→laser TF
+
+    odom_frame:      base_link
+    base_link_frame: base_link
+    world_frame:     map       # absolute pose in map frame
+
+    # 순서 x,y,z
+    # roll,pitch,yaw
+    # vx,vy,vz
+    # vroll,vpitch,vyaw
+    # ax,ay,az
+
+    # VESC wheel odometry: use twist only (vx, vyaw)
+    odom0: /vesc/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_differential: false
+
+    # Particle filter pose: use position + yaw
+    odom1: /pf/pose/odom
+    odom1_config: [true,  true,  false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_differential: false
+
+    # VESC IMU: yaw rate (gyro z) only, replaces vesc_odom's kinematic vyaw.
+    imu0: /vesc/sensors/imu
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_queue_size: 10

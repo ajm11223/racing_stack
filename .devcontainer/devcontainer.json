@@ -1,0 +1,50 @@
+{
+    "name": "UNICORN Racing Stack (Jazzy / RoboStack conda)",
+    // Build the conda toolchain image; the `unicorn` env + colcon build happen on
+    // first start via postCreate.sh (INSTALL.md Path A). Matches .docker/.
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "USERNAME": "${localEnv:USER}",
+            "UID": "${localEnv:UID:1000}",
+            "GID": "${localEnv:GID:1000}"
+        }
+    },
+    "remoteUser": "${localEnv:USER}",
+    // This repo is <workspace>/src/unicorn-racing-stack. Mount the workspace root
+    // (two levels up) at /ws so colcon sees src/ and sibling repos.
+    "workspaceFolder": "/ws",
+    "workspaceMount": "source=${localWorkspaceFolder}/../..,target=/ws,type=bind",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cpptools-extension-pack",
+                "ms-python.python",
+                "ms-iot.vscode-ros",
+                "twxs.cmake",
+                "redhat.vscode-xml",
+                "foxundermoon.shell-format"
+            ]
+        }
+    },
+    "containerEnv": {
+        "DISPLAY": "${localEnv:DISPLAY}",
+        "XAUTHORITY": "/tmp/.Xauthority",
+        "ROS_DOMAIN_ID": "1",
+        "RAYCASTER_DIR": "/ws/src/unicorn-racing-stack/race_utils/raycaster"
+    },
+    "runArgs": [
+        "--name", "unicorn_racing_stack",
+        "--net", "host",
+        "--privileged"
+    ],
+    "mounts": [
+        "source=${localEnv:XAUTHORITY},target=/tmp/.Xauthority,type=bind,consistency=cached",
+        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
+        "source=/dev/input,target=/dev/input,type=bind"
+    ],
+    // First-create: build the unicorn env (RoboStack Jazzy) + colcon. Slow once,
+    // then reused. See .devcontainer/postCreate.sh.
+    "postCreateCommand": "bash .devcontainer/postCreate.sh"
+}
