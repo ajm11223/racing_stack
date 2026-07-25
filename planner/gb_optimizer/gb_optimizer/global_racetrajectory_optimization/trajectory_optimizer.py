@@ -445,7 +445,7 @@ def trajectory_optimizer(input_path: str,
                                           drag_coeff=pars["veh_params"]["dragcoeff"],
                                           m_veh=pars["veh_params"]["mass"],
                                           mu_rqt_scale=1.0,
-                                          dyn_model_exp_rqt=1.629    )
+                                          dyn_model_exp_rqt=1.8    )
 
     # calculate longitudinal acceleration profile
     vx_profile_opt_cl = np.append(vx_profile_opt, vx_profile_opt[0])
