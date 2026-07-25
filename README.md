@@ -356,18 +356,16 @@ ros2 param set /controller_manager save_params true     # -> controller_map.yaml
 ### 7. Closed-loop tuner (optional)
 
 `tune_controller.py` drives an already-running stack. Its study lives in SQLite
-and the path in `tuner_config.yaml` is absolute — point it at your own tree
-first:
+next to the scripts (`tuning/optuna_stage1.db`, gitignored):
 
 ```bash
-sed -i "s|sqlite:////home/ajm/unicorn_ws/tuning/|sqlite:///$(pwd)/|" tuner_config.yaml
 ros2 launch stack_master race.launch.xml sim:=true map:=s use_map:=true   # terminal 2
 python tune_controller.py --n-trials 60                                  # terminal 1
 ```
 
-`overnight.sh` (unattended sim + tuner, single-instance flock) derives its paths
-from its own location, so it needs no editing — but it drives
-`tune_controller.py`, so the `sed` above still applies.
+`overnight.sh` (unattended sim + tuner, single-instance flock) wraps both and
+derives its paths from its own location. Neither needs editing for a clone at
+a different path.
 
 ### Caveats — read before trusting a result
 

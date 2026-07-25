@@ -26,7 +26,9 @@ study:
   # then fastest within it. NOT more than this - overweighting makes "drive
   # slow" the cheapest smoothness and the search collapses to low scaling.
   name: controller_stage1_v5
-  storage: sqlite:////home/ajm/unicorn_ws/tuning/optuna_stage1.db
+  # relative -> resolved against tuning/ by tune_controller.resolve_storage, so
+  # a clone at any path works. An absolute sqlite:////... still passes through.
+  storage: sqlite:///optuna_stage1.db
   n_trials: 60                 # per invocation; study resumes from storage
 
 run:

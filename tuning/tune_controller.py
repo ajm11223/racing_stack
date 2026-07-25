@@ -35,7 +35,24 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 
-CFG_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tuner_config.yaml")
+TUNING_DIR = os.path.dirname(os.path.abspath(__file__))
+CFG_DEFAULT = os.path.join(TUNING_DIR, "tuner_config.yaml")
+
+
+def resolve_storage(url):
+    """Anchor a relative sqlite URL at this directory, like fast_tune's JOURNAL.
+
+    `sqlite:///optuna_stage1.db` would otherwise land wherever you happened to
+    cd from, silently creating a second empty study. Absolute URLs
+    (`sqlite:////abs/path.db`) and non-sqlite backends pass through unchanged.
+    """
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return url
+    path = url[len(prefix):]
+    if os.path.isabs(path):
+        return url
+    return prefix + os.path.join(TUNING_DIR, path)
 
 
 class TrialFailed(Exception):
@@ -455,7 +472,8 @@ def main():
     cfg = load_cfg(args.config)
 
     study = optuna.create_study(
-        study_name=cfg["study"]["name"], storage=cfg["study"]["storage"],
+        study_name=cfg["study"]["name"],
+        storage=resolve_storage(cfg["study"]["storage"]),
         direction="minimize", load_if_exists=True)
 
     if args.show_best:
