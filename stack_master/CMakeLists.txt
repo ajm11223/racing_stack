@@ -42,6 +42,11 @@ install(PROGRAMS
   scripts/static_tf_publisher.py
   scripts/vesc_calibration_node.py
   scripts/imu_mount_calibration.py
+  # real-car diagnostic loggers (no sim equivalent: they read /vesc topics)
+  scripts/imu_odom_compare_node.py
+  scripts/odom_compare_node.py
+  scripts/servo_voltage_log_node.py
+  scripts/ackermann_servo_compare_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
