@@ -2,8 +2,8 @@
 # overnight.sh — unattended sim + Optuna tuning run.
 #
 # Usage (or just use the `overnight` shortcut from ~/.bashrc):
-#     nohup bash ~/unicorn_ws/tuning/overnight.sh [n_trials] \
-#         > ~/unicorn_ws/tuning/overnight.log 2>&1 &
+#     T=~/unicorn_ws/src/unicorn-racing-stack/tuning
+#     nohup bash $T/overnight.sh [n_trials] > $T/overnight.log 2>&1 &
 #
 # Deliberately NON-interactive: `bash -ic ...` backgrounded from a terminal
 # gets SIGTTIN/SIGTTOU from the controlling tty and freezes in T state
@@ -11,8 +11,10 @@
 # env + sourcing unicorn.sh directly has no tty interaction at all.
 # no `set -u`: conda/RoboStack activate.d scripts reference unbound vars
 N_TRIALS="${1:-400}"
-WS=/home/ajm/unicorn_ws
-LOGDIR="$WS/tuning"
+# derive both from this script's own location (<stack>/tuning/overnight.sh), so
+# the run survives the repo being cloned anywhere
+LOGDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STACK="$(dirname "$LOGDIR")"
 
 # single-instance lock: a second `overnight` while one is running must NOT
 # start - on 2026-07-22 a double invocation killed the first run's sim
@@ -25,7 +27,7 @@ if ! flock -n 9; then
 fi
 
 echo "[overnight] entering unicorn env..."
-source "$WS/src/unicorn-racing-stack/unicorn.sh"
+source "$STACK/unicorn.sh"
 
 # this script OWNS the stack: kill any already-running sim/tuner first.
 # Two gym instances mixing odom makes every consumer go insane (lap_analyser

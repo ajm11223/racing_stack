@@ -365,8 +365,9 @@ ros2 launch stack_master race.launch.xml sim:=true map:=s use_map:=true   # term
 python tune_controller.py --n-trials 60                                  # terminal 1
 ```
 
-`overnight.sh` (unattended sim + tuner, single-instance flock) hardcodes
-`WS=/home/ajm/unicorn_ws` at the top — edit that line before using it.
+`overnight.sh` (unattended sim + tuner, single-instance flock) derives its paths
+from its own location, so it needs no editing — but it drives
+`tune_controller.py`, so the `sed` above still applies.
 
 ### Caveats — read before trusting a result
 

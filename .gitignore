@@ -37,3 +37,6 @@ COLCON_IGNORE
 
 # lap_analyser lap-time logs (generated output; local only)
 race_utils/f110_utils/nodes/lap_analyser/data/
+
+# conda installer downloaded by setup_conda_*.sh (105 MB, not source)
+Miniforge3-*.sh

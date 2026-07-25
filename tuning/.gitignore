@@ -2,3 +2,4 @@ journal_fast.log*
 optuna_stage1.db
 *.log
 __pycache__/
+.overnight.lock
