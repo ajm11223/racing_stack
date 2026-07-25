@@ -89,8 +89,9 @@ class RaceCar(object):
         self.num_beams = num_beams
         self.fov = fov
         self.integrator = integrator
-        if self.integrator is Integrator.RK4:
-            warnings.warn(f"Chosen integrator is RK4. This is different from previous versions of the gym.")
+        # RK4 is the default integrator; the upstream "different from previous
+        # versions" warning fired on every env creation (12x under fast_tune's
+        # worker pool) and carries no information anymore.
 
         # state is [x, y, steer_angle, vel, yaw_angle, yaw_rate, slip_angle]
         self.state = np.zeros((7, ))
