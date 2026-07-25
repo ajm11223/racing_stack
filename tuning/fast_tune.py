@@ -34,8 +34,29 @@ import numpy as np
 import yaml
 
 TUNING_DIR = os.path.dirname(os.path.abspath(__file__))
-WS = "/home/ajm/unicorn_ws"
-STACK = f"{WS}/src/unicorn-racing-stack"
+
+
+def _find_stack():
+    """Locate the stack root, so this runs from a clone at any path.
+
+    Two layouts are supported: tuning/ sitting inside the repo (<stack>/tuning,
+    what you get from `git clone`) and tuning/ at the colcon workspace root
+    (<ws>/tuning, the layout these scripts were written in). Set UNICORN_STACK
+    to override when the tree lives somewhere else entirely.
+    """
+    parent = os.path.dirname(TUNING_DIR)
+    marker = "controller/controller/combined/src/Controller.py"
+    for cand in (os.environ.get("UNICORN_STACK"), parent,
+                 os.path.join(parent, "src", "unicorn-racing-stack")):
+        if cand and os.path.isfile(os.path.join(cand, marker)):
+            return os.path.abspath(cand)
+    sys.exit(f"[fast_tune] stack root not found next to {TUNING_DIR}\n"
+             f"            expected {marker} under it or under ../src/"
+             "unicorn-racing-stack\n"
+             "            set UNICORN_STACK=/path/to/unicorn-racing-stack")
+
+
+STACK = _find_stack()
 CFG_DEFAULT = os.path.join(TUNING_DIR, "tuner_config.yaml")
 JOURNAL = os.path.join(TUNING_DIR, "journal_fast.log")
 
@@ -54,7 +75,10 @@ from map_controller import Controller as MapController  # noqa: E402
 from frenet_conversion.frenet_converter import FrenetConverter  # noqa: E402
 from steering_lookup.lookup_steer_angle import LookupSteerAngle  # noqa: E402
 
-MAP_DIR = f"{STACK}/stack_master/maps/s"
+# map whose raceline + speed_scaling the trials drive. UNICORN_MAP=<name> picks
+# another map under stack_master/maps/ (it must carry global_waypoints.json).
+MAP_NAME = os.environ.get("UNICORN_MAP", "s")
+MAP_DIR = f"{STACK}/stack_master/maps/{MAP_NAME}"
 SIM_DIR = f"{STACK}/stack_master/config/SIM"
 CTRL_YAMLS = {
     "pp": f"{STACK}/stack_master/config/controller.yaml",
