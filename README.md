@@ -93,6 +93,21 @@ ros2 launch stack_master race.launch.xml sim:=true map:=f   # full autonomy + vi
 #   low_level.launch.xml = vehicle + sensors only
 ```
 
+**Then press `a` to arm autonomous driving** — until you do, the car sits still:
+the controller publishes, but `simple_mux` forwards nothing while `keyboard_joy`
+streams its startup *human* mode. The key hook is global (pynput — any focused
+window counts, and typing normally can trigger it):
+
+| key | effect |
+|---|---|
+| `a` | **auto** — controller drives the car |
+| `h` | **human** — manual mode (car stops unless you steer it) |
+| arrows / space | manual drive / zero command (human mode) |
+
+So a still car after a clean launch usually just means human mode — check
+`ros2 topic echo /joy_keyboard --once` (`buttons[5]=1` is auto) before hunting
+deeper. And a stray `h` typed in any window mid-run disarms the car.
+
 `unicorn` also defines helpers: `cbuild [pkgs...]` (colcon build Release + re-source;
 no args = whole workspace) and `ros2kill` (kill every ROS 2 node / launcher / daemon).
 
@@ -336,7 +351,8 @@ python fast_tune.py --ctrl map --study $STUDY --show-best
 # 2) pause the workers - the real sim needs the CPU
 pkill -STOP -f 'python.*fast_tune\.py'
 
-# 3) terminal 2: bring the stack up
+# 3) terminal 2: bring the stack up, then press 'a' to arm autonomous
+#    (see Quick simulation start -- a still car = human mode, not a bug)
 ros2 launch stack_master race.launch.xml sim:=true map:=s use_map:=true
 
 # 4) terminal 1: same metrics, full stack
