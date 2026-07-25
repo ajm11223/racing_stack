@@ -63,11 +63,15 @@ class Controller:
                 converter,
 
                 predict_pub=None,
+                use_chord_cap=False,       # optional MAP-style L1 chord-cap
+                l1_chord_err=1.0,          # chord-error cap [m]; >=1.0 ~ off
                 logger_info=logging.info,
                 logger_warn=logging.warning,
             ):
 
         # Parameters from manager
+        self.use_chord_cap = use_chord_cap
+        self.l1_chord_err = l1_chord_err
         self.t_clip_min = t_clip_min
         self.t_clip_max = t_clip_max
         self.m_l1 = m_l1
@@ -383,6 +387,32 @@ class Controller:
         lower_bound = max(self.t_clip_min, np.sqrt(2)*future_lateral_error)
 
         L1_distance = np.clip(L1_distance, lower_bound, self.t_clip_max)
+
+        # NaN guard: curvature_waypoints goes NaN when the +10:+20 curvature
+        # slice is empty (stale/short local waypoints after a teleport reset);
+        # np.clip passes NaN through and int(NaN) below would kill the node.
+        if not np.isfinite(L1_distance):
+            L1_distance = self.t_clip_min
+
+        # --- optional chord-error cap (use_chord_cap; default OFF) -----------
+        # Ported from the MAP controller. Aiming a chord at a point L1 ahead on
+        # a curve cuts the corner by e ~= kappa*L1^2/8; cap L1 so e stays under
+        # l1_chord_err. kappa is previewed over the WHOLE [car, car+L1] span
+        # (not the fixed +10:+20 window), so the cap tightens CONTINUOUSLY and
+        # EARLY as the corner enters the horizon - removing the abrupt
+        # entry-approach L1 step that makes pure-PP oscillate before a corner.
+        # OFF by default -> pure-PP behaviour is byte-identical.
+        if self.use_chord_cap:
+            wp = self.waypoint_array_in_map
+            idx0 = self.future_idx_nearest_waypoint
+            ds = np.diff(wp[idx0:idx0 + 20, 4])
+            spacing = float(np.median(ds[ds > 0])) if np.any(ds > 0) else 0.1
+            n_ahead = max(int(L1_distance / spacing), 2)
+            kappa_preview = float(np.mean(np.abs(wp[idx0:idx0 + n_ahead, 5])))
+            if kappa_preview > 1e-4:
+                L1_cap = np.sqrt(8.0 * self.l1_chord_err / kappa_preview)
+                L1_distance = max(min(L1_distance, L1_cap), lower_bound)
+        # --------------------------------------------------------------------
 
         future_L1_point = self.waypoint_at_distance_before_car(L1_distance, self.waypoint_array_in_map[:, :2], self.future_idx_nearest_waypoint)
 

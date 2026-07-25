@@ -1,0 +1,58 @@
+controller_manager:
+  ros__parameters:
+    # ===== PP+MAP mode parameter set (loaded when use_map:=true) =====
+    # Separate from controller.yaml (pure-PP set) so the two controllers keep
+    # independent tunings; launch selects this file on use_map:=true and points
+    # save_yaml_path here so live-tuning writes back to the right file.
+    #
+    # === trial #7920 (controller_fast_v6b, 2026-07-23) ===
+    # Optuna TPE on the latency-modeled (30 ms) headless sim, 4-lap cost,
+    # w_osc 64 / w_weave 2000. Sim-verified: lap 10.0 s, weave 0.0021. These
+    # were tuned WITH the MAP lookup (SIM_linear) in the loop.
+    # Smoothest alternative: tuning/applied_11682_smooth.yaml (10.5 s).
+    t_clip_min: 0.7809
+    t_clip_max: 6.9949
+    m_l1: 0.3647
+    q_l1: 0.0534
+    speed_lookahead: 0.1002
+    lat_err_coeff: 0.839
+    acc_scaler_for_steer: 1.2023
+    dec_scaler_for_steer: 1.0218
+    start_scale_speed: 6.5
+    end_scale_speed: 10.0
+    downscale_factor: 0.6531
+    speed_lookahead_for_steer: 0.2839
+    trailing_gap: 2.5
+    trailing_vel_gain: 0.25
+    trailing_p_gain: 1.35
+    trailing_i_gain: 0.0
+    trailing_d_gain: 1.0
+    blind_trailing_speed: 1.5
+    curvature_factor: 0.1018
+    speed_factor_for_lat_err: 0.356
+    speed_factor_for_curvature: 1.1601
+    KP: 0.0366
+    KI: 0.0
+    KD: 0.0039
+    heading_error_thres: 10.0
+    steer_gain_for_speed: 1.0
+    future_constant: 0.0138
+    AEB_thres: 0.5
+    speed_diff_thres: 0.1
+    start_speed: 10.0
+    start_curvature_factor: 1.5
+    l1_chord_err: 0.7471       # v3 chord-error L1 cap [m]; >=1.0 ~ off (legacy)
+    lat_err_steer_coeff: 0.296  # v3; ln2=0.6931 = legacy exp coeff
+    ftg_debug: true
+    ftg_max_lidar_dist: 4.0
+    ftg_max_speed: 2.0
+    ftg_track_width: 2.0
+    ftg_front_fov_deg: 80.0
+    ftg_smooth_deg: 1.0
+    ftg_disp_thresh: 0.5
+    ftg_bubble_m: 0.3
+    ftg_steer_ema: 0.0
+    ftg_max_steer: 0.4
+    use_map: true           # this is the MAP param set; launch arg still overrides
+    LU_table: "UNICORN2-0410"   # steering_lookup cfg table prefix (latest UNICORN2 sys-id)
+    save_params: false

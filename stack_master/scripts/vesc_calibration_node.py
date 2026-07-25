@@ -139,7 +139,7 @@ class VescCalibrationNode(Node):
         gp('ramp_time', 0.5)
         gp('cmd_rate', 50.0)
         gp('min_speed', 0.05)
-        gp('max_abs_speed', 3.0)                           # m/s hard cap
+        gp('max_abs_speed', 8.0)                           # m/s hard cap
         gp('max_abs_steer', 0.4)                           # rad hard cap
 
         # --- manual (rqt) drive -----------------------------------------

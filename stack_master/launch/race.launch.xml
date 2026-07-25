@@ -34,6 +34,8 @@
        description="Lateral control: false = original Pure-Pursuit controller (controller_manager exec, controller.yaml); true = separate MAP steering-lookup controller (map_controller_manager exec, controller_map.yaml). Two distinct execs so the pure-PP code stays untouched."/>
   <arg name="lu_table" default="UNICORN2-0410"
        description="MAP lookup table prefix (steering_lookup cfg). Ignored in sim: forced to SIM_linear so a real-car table is never used against sim physics."/>
+  <arg name="use_chord_cap" default="false"
+       description="Pure-Pursuit only (use_map:=false): enable the MAP-style L1 chord-cap that smooths corner-entry L1 reduction. Live-tunable in rqt too (use_chord_cap + l1_chord_err). No effect on the MAP controller (always capped)."/>
   <let name="lu_table" value="SIM_linear" if="$(var sim)"/>
   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
   <let name="racecar_version" value="SIM" if="$(var sim)"/>
@@ -123,6 +125,8 @@
     <param from="$(find-pkg-share stack_master)/config/controller.yaml"/>
     <param name="save_yaml_path" value="$(find-pkg-share stack_master)/config/controller.yaml"/>
     <param name="sim" value="$(var sim)"/>
+    <!-- launch arg overrides the yaml default; still live-tunable in rqt -->
+    <param name="use_chord_cap" value="$(var use_chord_cap)"/>
   </node>
 
   <!-- use_map:=true: SEPARATE MAP steering-lookup controller (own exec + own

@@ -44,12 +44,7 @@ vesc/**:
     speed_to_erpm_offset: 0.0
     steering_angle_to_servo_gain: 0.51
     #수정 전 steering_angle_to_servo_offset: 0.475 오른쪽으로 가는 경향이 심했음 0.48497
-    steering_angle_to_servo_offset: 0.5  #0.49
-    #07.15 수정 0.47875 
-    # 0.4775 좌 
-    # 0.47875살짝살짝좌라면-> 0.479375로 바꾸기
-    # 0.47875살짝살짝우라면-> 0.478125  바꾸기
-    # 0.48 우
+    steering_angle_to_servo_offset: 0.4995  #07/25 수정완
     use_servo_cmd_to_calc_angular_velocity: true
     # Adaptive wheel odometry (vesc_to_odom_node):
     # adaptive_gain = speed_to_erpm_gain + gain_offset + acceleration_gain * filtered_ax
