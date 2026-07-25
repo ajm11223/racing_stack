@@ -18,7 +18,7 @@ controller_manager:
     trailing_i_gain: 0.0
     trailing_d_gain: 1.0
     blind_trailing_speed: 1.5
-    curvature_factor: 0.1018
+    curvature_factor: 0.0
     speed_factor_for_lat_err: 0.356
     speed_factor_for_curvature: 1.1601
     KP: 0.0366

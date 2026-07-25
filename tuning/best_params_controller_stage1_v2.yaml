@@ -1,0 +1,20 @@
+cost: 8.702839796129075
+trial: 256
+params:
+  m_l1: 0.37805225207552046
+  q_l1: 0.5729083893080795
+  t_clip_min: 1.2662489185743866
+  t_clip_max: 5.066975317684265
+  curvature_factor: 0.13731669986957265
+  speed_lookahead: 0.179717889760975
+  speed_factor_for_lat_err: 0.8490792403330569
+  speed_factor_for_curvature: 1.5405490063189333
+  /speed_sector_tuner:Sector0.scaling: 1.66
+  KP: 0.5124368285727812
+  KD: 0.018432303456227418
+user_attrs:
+  dsteer_rms: 0.027120545169917305
+  lap_times:
+  - 8.247989416122437
+  - 8.190521717071533
+  mean_abs_d: 0.09377551221310518

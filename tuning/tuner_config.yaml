@@ -54,6 +54,13 @@ objective:
   w_weave: 2000.0              # cost per m RMS of per-sample SIGNED d increment
                                # (body sway; clean ~0.002 -> +4.0,
                                #  5 cm @ 2 Hz weave ~0.009 -> +18 = prohibitive)
+  # v7c 2026-07-25: WORST-CORNER oscillation penalties. The whole-lap RMS above
+  # averaged a single oscillating corner (left C, L1-collapse) away, so the
+  # optimizer happily picked high curvature_factor. These score the worst ~1 s
+  # window, forcing every corner smooth (user found curvature_factor 0.02 fixes
+  # it by hand; this makes the tuner discover that class of fix itself).
+  w_osc_worst: 40.0            # cost per rad of worst-window steer-delta RMS
+  w_weave_worst: 600.0         # cost per m of worst-window d-increment RMS
   fail_penalty: 120.0          # base cost for crash/stuck/offtrack/timeout
   progress_bonus: 5.0          # subtracted x (progress fraction) on failure
 
@@ -64,8 +71,10 @@ objective:
 # "/node:param" syntax targets that node instead of the controller.
 # ---------------------------------------------------------------------------
 params:
-  m_l1:                      {enabled: true,  low: 0.35, high: 0.70}
-  q_l1:                      {enabled: true,  low: 0.00, high: 1.00}
+  # v7: widened to CONTAIN the car's proven PP values (m_l1 0.8, q_l1 -0.2)
+  # which sat outside the old bounds; the new-physics optimum may live there.
+  m_l1:                      {enabled: true,  low: 0.35, high: 1.00}
+  q_l1:                      {enabled: true,  low: -0.30, high: 1.00}
   t_clip_min:                {enabled: true,  low: 0.60, high: 2.50}
   t_clip_max:                {enabled: true,  low: 3.00, high: 8.00}
   curvature_factor:          {enabled: true,  low: 0.00, high: 0.25}
@@ -79,7 +88,9 @@ params:
   # rejects finer values.
   # high=2.0: v2 run pinned at the old 1.6 bound (top10 all 1.54-1.60);
   # 2.0 is the sector_tuner descriptor ceiling, so this is as far as it opens.
-  "/speed_sector_tuner:Sector0.scaling": {enabled: true, low: 1.20, high: 2.00, step: 0.01}
+  # v7b 2026-07-25: scaling FROZEN at 1.0 (see frozen: below) - user fixes the
+  # speed profile and tunes only the L1/steer geometry against it.
+  "/speed_sector_tuner:Sector0.scaling": {enabled: false, low: 1.00, high: 2.00, step: 0.01}
   # v3 refinements - ranges include "off" so the search subsumes v2 behaviour:
   # l1_chord_err 1.0 ~ cap disabled; lat_err_steer_coeff 0.6931 = legacy ln2.
   l1_chord_err:              {enabled: true,  low: 0.05, high: 1.00}
@@ -92,6 +103,10 @@ params:
   lat_err_coeff:             {enabled: true,  low: 0.50, high: 1.00}
   acc_scaler_for_steer:      {enabled: true,  low: 0.80, high: 1.30}
   dec_scaler_for_steer:      {enabled: true,  low: 0.80, high: 1.30}
+  # band anchor: NOT searched and now pinned explicitly in frozen: below, so a
+  # yaml edit / ctrl-save / --show-best write can't drift it out from under a
+  # study (2026-07-25). Ablation at scaling 1.0: re-centring the band to 5.0-9.0
+  # cost +0.27 and only fed weave - the 6.5/10.0 anchor stays.
   start_scale_speed:         {enabled: false, low: 4.00, high: 8.00}
   end_scale_speed:           {enabled: false, low: 7.00, high: 12.00}
   downscale_factor:          {enabled: true,  low: 0.00, high: 0.80}
@@ -128,6 +143,14 @@ frozen:
   # sector_tuner clips Sector0.scaling to global_limit (yaml default 1.2);
   # raise it so the scaling search space [0.9, 1.6] is actually reachable.
   "/speed_sector_tuner:global_limit": 2.0
+  # v7b: speed profile fixed at 1.0 (not searched) - tune geometry only.
+  "/speed_sector_tuner:Sector0.scaling": 1.0
   # KI only: KP/KD are search dimensions now; KI stays off (windup risk, and
   # controller.yaml still carries an old nonzero value).
   KI: 0.0
+  # steer-downscale band anchor, pinned at the current yaml values (both
+  # controller.yaml and controller_map.yaml carry 6.5 / 10.0). Not searched;
+  # spelled out here so every trial gets the same band no matter what the
+  # controller yamls drift to. downscale_factor (the magnitude) stays searched.
+  start_scale_speed: 6.5
+  end_scale_speed: 10.0

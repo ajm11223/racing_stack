@@ -367,7 +367,32 @@ def make_objective(node, cfg):
     return objective
 
 
-def print_best(study, cfg, max_d=None, by="cost"):
+def apply_best_to_yaml(params, frozen, target_path):
+    """Write the tuned param values into an existing controller yaml IN PLACE,
+    preserving structure and comments (ruamel round-trip). Only the
+    controller_manager params are touched; '/'-prefixed node keys (e.g.
+    sector_tuner scaling) live in other files and are skipped. Keys absent from
+    the yaml are added; everything else is left untouched."""
+    from ruamel.yaml import YAML
+    ry = YAML()
+    ry.preserve_quotes = True
+    with open(target_path) as f:
+        doc = ry.load(f)
+    node = doc["controller_manager"]["ros__parameters"]
+    merged = {k: v for k, v in {**(frozen or {}), **params}.items()
+              if not (isinstance(k, str) and k.startswith("/"))}
+    changed = 0
+    for k, v in merged.items():
+        newv = round(float(v), 6)
+        if node.get(k) != newv:
+            node[k] = newv
+            changed += 1
+    with open(target_path, "w") as f:
+        ry.dump(doc, f)
+    print(f"applied -> {target_path}  ({changed} params updated)")
+
+
+def print_best(study, cfg, max_d=None, by="cost", out_name=None, apply_to=None):
     """Pick the best trial. Default: lowest cost. With --max-d, only trials
     whose mean |d| stayed under the threshold qualify; --by lap ranks by raw
     lap time instead of the weighted cost."""
@@ -403,13 +428,18 @@ def print_best(study, cfg, max_d=None, by="cost"):
         else:
             node, name = cfg["run"]["node_name"], k
         print(f"  ros2 param set {node} {name} {v:.4f}")
+    # out_name lets the caller (fast_tune per-ctrl) key the file by the actual
+    # study, not cfg's study.name — otherwise pp and map overwrite each other.
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       f"best_params_{cfg['study']['name']}.yaml")
+                       f"best_params_{out_name or cfg['study']['name']}.yaml")
     with open(out, "w") as f:
         yaml.dump({"cost": float(t.value), "trial": t.number,
                    "params": {k: float(v) for k, v in t.params.items()},
                    "user_attrs": dict(t.user_attrs)}, f, sort_keys=False)
-    print(f"\nsaved -> {out}\n(then: ros2 param set {cfg['run']['node_name']} save_params true)")
+    print(f"\nsaved -> {out}")
+    if apply_to:
+        apply_best_to_yaml({k: v for k, v in t.params.items()},
+                           cfg.get("frozen"), apply_to)
 
 
 def main():

@@ -46,13 +46,32 @@ sys.path.insert(0, f"{STACK}/race_utils/f110_utils/libs/frenet_conversion")
 from f1tenth_gym_ros import numba_free  # noqa: F401,E402
 import gymnasium as gym  # noqa: E402
 
-from Controller import Controller  # noqa: E402
+# node-split stack (2026-07-25): Controller.py = original pure-PP,
+# map_controller.py = MAP variant (chord-cap + lookup feedforward). --ctrl
+# picks which one is tuned; each has its own yaml and its own search dims.
+from Controller import Controller as PPController  # noqa: E402
+from map_controller import Controller as MapController  # noqa: E402
 from frenet_conversion.frenet_converter import FrenetConverter  # noqa: E402
 from steering_lookup.lookup_steer_angle import LookupSteerAngle  # noqa: E402
 
 MAP_DIR = f"{STACK}/stack_master/maps/s"
 SIM_DIR = f"{STACK}/stack_master/config/SIM"
-CONTROLLER_YAML = f"{STACK}/stack_master/config/controller.yaml"
+CTRL_YAMLS = {
+    "pp": f"{STACK}/stack_master/config/controller.yaml",
+    "map": f"{STACK}/stack_master/config/controller_map.yaml",
+}
+# search dims that only exist in the MAP controller
+MAP_ONLY_DIMS = ("l1_chord_err", "lat_err_steer_coeff")
+# dims searched for PP only. In MAP the chord-error cap (l1_chord_err) already
+# shortens L1 on previewed curvature, so searching curvature_factor alongside it
+# lets the two mechanisms cancel each other out and wastes a dimension. Excluded
+# from MAP studies 2026-07-25 (user request); MAP then uses whatever value
+# controller_map.yaml carries.
+PP_ONLY_DIMS = ("curvature_factor",)
+# MAP steering-lookup table for the feedforward. v7b: UNICORN2-0410 (the real
+# car's measured table, what the car actually runs) instead of SIM_linear, so
+# the MAP tuning sees the same steering response as the vehicle.
+MAP_LU_TABLE = "UNICORN2-0410"
 
 PHYS_HZ = 100.0          # physics integration rate (bridge: 80; finer is fine)
 CTRL_EVERY = 2           # -> control at exactly 50 Hz, matching the stack
@@ -79,7 +98,8 @@ CTRL_ARGS = [
 class FastLapSim:
     """One gym env + raceline; evaluates a param dict -> lap metrics."""
 
-    def __init__(self, latency_s=LATENCY_S):
+    def __init__(self, latency_s=LATENCY_S, ctrl="pp"):
+        self.ctrl = ctrl
         self.lat_steps = int(round(latency_s * PHYS_HZ))
         d = json.load(open(f"{MAP_DIR}/global_waypoints.json"))
         wpnts = d["global_traj_wpnts_iqp"]["wpnts"]
@@ -106,16 +126,16 @@ class FastLapSim:
                             timestep=1.0 / PHYS_HZ,
                             num_beams=32, scan_fov=4.7,   # scan unused; keep cheap
                             disable_env_checker=True)
-        self.yaml_params = yaml.safe_load(open(CONTROLLER_YAML))[
+        self.yaml_params = yaml.safe_load(open(CTRL_YAMLS[ctrl]))[
             "controller_manager"]["ros__parameters"]
-        self.steer_lookup = LookupSteerAngle("SIM_linear", print)
+        self.steer_lookup = (LookupSteerAngle(MAP_LU_TABLE, print)
+                             if ctrl == "map" else None)
 
     def _make_controller(self, p):
         """Controller with yaml values overridden by candidate params p."""
         v = dict(self.yaml_params)
         v.update({k: val for k, val in p.items() if not k.startswith("/")})
-        c = Controller(
-            *[float(v[k]) for k in CTRL_ARGS],
+        common = dict(
             loop_rate=PHYS_HZ / CTRL_EVERY,
             wheelbase=0.321,
             speed_factor_for_lat_err=float(v["speed_factor_for_lat_err"]),
@@ -125,18 +145,38 @@ class FastLapSim:
             start_curvature_factor=float(v["start_curvature_factor"]),
             AEB_thres=float(v["AEB_thres"]),
             converter=self.converter,
-            steer_lookup=self.steer_lookup,
-            use_map=True,
-            l1_chord_err=float(v["l1_chord_err"]),
-            lat_err_steer_coeff=float(v["lat_err_steer_coeff"]),
             logger_info=lambda *a, **k: None,
             logger_warn=lambda *a, **k: None,
         )
-        return c
+        if self.ctrl == "map":
+            return MapController(
+                *[float(v[k]) for k in CTRL_ARGS], **common,
+                steer_lookup=self.steer_lookup, use_map=True,
+                l1_chord_err=float(v["l1_chord_err"]),
+                lat_err_steer_coeff=float(v["lat_err_steer_coeff"]),
+            )
+        return PPController(
+            *[float(v[k]) for k in CTRL_ARGS], **common,
+            use_chord_cap=bool(v.get("use_chord_cap", False)),
+            l1_chord_err=float(v.get("l1_chord_err", 1.0)),
+        )
 
     # n_laps=4 since v6b (was 2): the sim is deterministic per lap, but
     # marginal sets degrade ACROSS laps (slowly building oscillation, lap-3/4
     # departure) - 4 measured laps folds that robustness into the cost.
+    @staticmethod
+    def _worst_window(x, win):
+        """Max over sliding windows of the per-step-delta RMS. Whole-lap RMS
+        averages a single bad corner away; this surfaces the WORST local
+        oscillation (the C-corner L1-collapse the whole-lap metric missed)."""
+        dx = np.diff(np.asarray(x, dtype=float))
+        if dx.size < win:
+            return float(np.sqrt(np.mean(dx ** 2))) if dx.size else 0.0
+        # sliding-window RMS via cumulative sum of squares
+        c = np.concatenate([[0.0], np.cumsum(dx ** 2)])
+        win_ss = c[win:] - c[:-win]
+        return float(np.sqrt(win_ss.max() / win))
+
     def evaluate(self, p, n_laps=4, max_lap_time=60.0, offtrack_d=0.7,
                  record=None):
         """Standing start + warmup lap + n measured laps. Mirrors the live
@@ -194,11 +234,15 @@ class FastLapSim:
                 else:
                     dsg = np.asarray(lap_d)
                     st = np.asarray(lap_steer)
+                    # ~1 s window (50 samples @ 50 Hz) = roughly one corner
+                    win = int(round(1.0 / dt_ctrl))
                     lap_metrics.append((
                         t - lap_start_t,
                         float(np.mean(np.abs(dsg))), float(np.max(np.abs(dsg))),
                         float(np.sqrt(np.mean(np.diff(dsg) ** 2))),
                         float(np.sqrt(np.mean(np.diff(st) ** 2))),
+                        self._worst_window(st, win),   # worst-corner steer osc
+                        self._worst_window(dsg, win),  # worst-corner d weave
                     ))
                     laps_done += 1
                     lap_start_t = t
@@ -242,6 +286,9 @@ class FastLapSim:
             "max_abs_d": float(np.max([m[2] for m in lap_metrics])),
             "d_weave_rms": float(np.mean([m[3] for m in lap_metrics])),
             "dsteer_rms": float(np.mean([m[4] for m in lap_metrics])),
+            # worst local (per-corner) oscillation, max across laps
+            "dsteer_worst": float(np.max([m[5] for m in lap_metrics])),
+            "d_weave_worst": float(np.max([m[6] for m in lap_metrics])),
         }
 
 
@@ -258,7 +305,7 @@ def pick_best(study, max_d=None, by="cost"):
     return min(ok, key=lambda t: t.value)
 
 
-def plot_best(study, cfg, max_d=None, by="cost",
+def plot_best(study, cfg, max_d=None, by="cost", ctrl="pp",
               out=os.path.join(TUNING_DIR, "best_lap_analysis.png")):
     """Re-drive the best trial's params headless, then graph the driven lap
     against the global raceline. Colors: validated palette slots 1 (blue) and
@@ -272,7 +319,7 @@ def plot_best(study, cfg, max_d=None, by="cost",
         print("no qualifying trial to plot.")
         return
     print(f"re-driving trial #{t.number} (cost {t.value:.2f}) for the plot...")
-    sim = FastLapSim()
+    sim = FastLapSim(ctrl=ctrl)
     rec = []
     m = sim.evaluate(dict(t.params), record=rec)
     rec = np.array(rec)                       # lap, s, x, y, d, v, steer
@@ -340,12 +387,14 @@ def load_cfg(path):
     return yaml.safe_load(open(path))
 
 
-def make_objective(cfg):
+def make_objective(cfg, ctrl="pp"):
     ob = cfg["objective"]
-    space = {k: v for k, v in cfg["params"].items() if v.get("enabled")}
+    space = {k: v for k, v in cfg["params"].items() if v.get("enabled")
+             and not (ctrl == "pp" and k in MAP_ONLY_DIMS)
+             and not (ctrl == "map" and k in PP_ONLY_DIMS)}
     frozen = {k: v for k, v in (cfg.get("frozen") or {}).items()
               if not k.startswith("/")}       # node-level frozen keys are N/A here
-    sim = FastLapSim()
+    sim = FastLapSim(ctrl=ctrl)
 
     def objective(trial):
         p = dict(frozen)
@@ -365,8 +414,13 @@ def make_objective(cfg):
                 + ob["w_lat_err"] * m["mean_abs_d"]
                 + ob.get("w_d_over", 0.0) * d_over
                 + ob["w_osc"] * m["dsteer_rms"]
-                + ob.get("w_weave", 0.0) * m["d_weave_rms"])
-        for k in ("lap_times", "mean_abs_d", "dsteer_rms", "d_weave_rms"):
+                + ob.get("w_weave", 0.0) * m["d_weave_rms"]
+                # worst-corner oscillation: penalizes a single bad corner the
+                # whole-lap RMS averages away (the C-corner L1 collapse)
+                + ob.get("w_osc_worst", 0.0) * m["dsteer_worst"]
+                + ob.get("w_weave_worst", 0.0) * m["d_weave_worst"])
+        for k in ("lap_times", "mean_abs_d", "dsteer_rms", "d_weave_rms",
+                  "dsteer_worst", "d_weave_worst"):
             trial.set_user_attr(k, m[k])
         return cost
 
@@ -380,21 +434,20 @@ def get_storage():
     return JournalStorage(JournalFileBackend(JOURNAL))
 
 
-def run_worker(study_name, cfg, n_trials, seed):
+def run_worker(study_name, cfg, n_trials, seed, ctrl="pp"):
     import optuna
     import warnings
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     warnings.filterwarnings("ignore", category=optuna.exceptions.ExperimentalWarning)
-    # multivariate+group: joint KDE over the (heavily correlated) L1/scaling
-    # dims instead of per-dim independent densities - independent TPE in 19-D
-    # degenerates toward per-coordinate random search.
+    # multivariate: joint KDE over the (heavily correlated) L1/scaling dims
+    # instead of per-dim independent densities.
     # constant_liar: workers see each other's RUNNING trials (with a pessimistic
     # placeholder cost) so 12 parallel samplers don't pile onto the same point.
     study = optuna.load_study(study_name=study_name, storage=get_storage(),
                               sampler=optuna.samplers.TPESampler(
-                                  seed=seed, multivariate=True, group=True,
+                                  seed=seed, multivariate=True,
                                   constant_liar=True))
-    study.optimize(make_objective(cfg), n_trials=n_trials)
+    study.optimize(make_objective(cfg, ctrl), n_trials=n_trials)
 
 
 def main():
@@ -412,28 +465,42 @@ def main():
     # 8.2 s laps). v5's zero-latency results are NOT comparable -> fresh study.
     # fast_v6b: 4 measured laps per trial (was 2) - long-horizon stability
     # now in the cost; 2-lap costs aren't comparable -> fresh study.
-    ap.add_argument("--study", default="controller_fast_v6b")
+    # v7 2026-07-25: NEW PHYSICS (proportional servo, sv_max 10 = B210-class)
+    # + node-split stack -> --ctrl picks pure-PP or MAP controller. Studies
+    # named per mode; all pre-v7 results used the old bang-bang plant and are
+    # NOT comparable.
+    ap.add_argument("--ctrl", choices=["pp", "map"], default="pp",
+                    help="which controller to tune: pp = original pure-"
+                         "Pursuit (controller.yaml), map = MAP variant "
+                         "(controller_map.yaml)")
+    ap.add_argument("--study", default=None,
+                    help="default: controller_fast_v7c_<ctrl>")
     ap.add_argument("--n-trials", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=max(os.cpu_count() - 2, 1))
     ap.add_argument("--smoke", action="store_true",
                     help="single evaluation with current yaml params")
     ap.add_argument("--show-best", action="store_true")
+    ap.add_argument("--no-apply", action="store_true",
+                    help="with --show-best: only print/snapshot, do NOT write "
+                         "the tuned values into controller[_map].yaml")
     ap.add_argument("--plot-best", action="store_true",
                     help="re-drive the best trial and graph it vs the raceline")
     ap.add_argument("--max-d", type=float, default=None)
     ap.add_argument("--by", choices=["cost", "lap"], default="cost")
     args = ap.parse_args()
+    if args.study is None:
+        args.study = f"controller_fast_v7c_{args.ctrl}"
     cfg = load_cfg(args.config)
 
     if args.smoke:
-        sim = FastLapSim()
+        sim = FastLapSim(ctrl=args.ctrl)
         scaling = yaml.safe_load(open(
             f"{MAP_DIR}/speed_scaling.yaml"))["speed_sector_tuner"][
             "ros__parameters"]["Sector0"]["scaling"]
         t0 = time.monotonic()
         m = sim.evaluate({SCALING_KEY: scaling})
         el = time.monotonic() - t0
-        print(f"smoke (yaml params, scaling {scaling}):")
+        print(f"smoke ({args.ctrl} yaml params, scaling {scaling}):")
         print(f"  laps {['%.2f' % x for x in m['lap_times']]}  "
               f"|d| {m['mean_abs_d']:.3f}  weave {m['d_weave_rms']:.4f}  "
               f"osc {m['dsteer_rms']:.4f}")
@@ -445,22 +512,28 @@ def main():
                                 direction="minimize", load_if_exists=True)
 
     if args.plot_best:
-        plot_best(study, cfg, max_d=args.max_d, by=args.by)
+        plot_best(study, cfg, max_d=args.max_d, by=args.by, ctrl=args.ctrl)
         return
 
     if args.show_best:
         sys.path.insert(0, TUNING_DIR)
         from tune_controller import print_best
-        print_best(study, cfg, max_d=args.max_d, by=args.by)
+        # apply into the live config for this controller (pp->controller.yaml,
+        # map->controller_map.yaml) unless --no-apply
+        apply_to = None if args.no_apply else CTRL_YAMLS[args.ctrl]
+        print_best(study, cfg, max_d=args.max_d, by=args.by,
+                   out_name=args.study, apply_to=apply_to)
         return
 
     # baseline: current yaml + saved scaling
     states = [t.state.name for t in study.trials]
     if "COMPLETE" not in states and "WAITING" not in states:
-        yp = yaml.safe_load(open(CONTROLLER_YAML))["controller_manager"]["ros__parameters"]
+        yp = yaml.safe_load(open(CTRL_YAMLS[args.ctrl]))["controller_manager"]["ros__parameters"]
         sc = yaml.safe_load(open(f"{MAP_DIR}/speed_scaling.yaml"))[
             "speed_sector_tuner"]["ros__parameters"]["Sector0"]["scaling"]
-        enabled = {k: v for k, v in cfg["params"].items() if v.get("enabled")}
+        enabled = {k: v for k, v in cfg["params"].items() if v.get("enabled")
+                   and not (args.ctrl == "pp" and k in MAP_ONLY_DIMS)
+                   and not (args.ctrl == "map" and k in PP_ONLY_DIMS)}
         baseline = {}
         for k, b in enabled.items():
             raw = sc if k == SCALING_KEY else yp.get(k)
@@ -474,10 +547,11 @@ def main():
             study.enqueue_trial(baseline)
             print(f"baseline enqueued: {baseline}")
 
-    print(f"study '{args.study}': {args.n_trials} trials x {args.workers} workers")
+    print(f"study '{args.study}' ({args.ctrl}): {args.n_trials} trials x {args.workers} workers")
     import multiprocessing as mp
     per = max(args.n_trials // args.workers, 1)
-    procs = [mp.Process(target=run_worker, args=(args.study, cfg, per, 1000 + i))
+    procs = [mp.Process(target=run_worker,
+                        args=(args.study, cfg, per, 1000 + i, args.ctrl))
              for i in range(args.workers)]
     t0 = time.monotonic()
     for p in procs:
@@ -496,7 +570,7 @@ def main():
     sys.path.insert(0, TUNING_DIR)
     from tune_controller import print_best
     print_best(optuna.load_study(study_name=args.study, storage=get_storage()),
-               cfg, max_d=args.max_d, by=args.by)
+               cfg, max_d=args.max_d, by=args.by, out_name=args.study)
 
 
 if __name__ == "__main__":

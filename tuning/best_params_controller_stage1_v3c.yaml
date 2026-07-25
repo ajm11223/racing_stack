@@ -1,0 +1,29 @@
+cost: 9.171685989071632
+trial: 1949
+params:
+  m_l1: 0.6002500257053092
+  q_l1: 0.08066425526710856
+  t_clip_min: 0.6358951252297852
+  t_clip_max: 5.411415846649595
+  curvature_factor: 0.06920054324763324
+  speed_lookahead: 0.16050521116727196
+  speed_factor_for_lat_err: 1.8104620503116593
+  speed_factor_for_curvature: 1.010927681658155
+  /speed_sector_tuner:Sector0.scaling: 1.74
+  l1_chord_err: 0.05109024968766897
+  lat_err_steer_coeff: 0.023367488540766486
+  lat_err_coeff: 0.8457190635816946
+  acc_scaler_for_steer: 1.1108462143567932
+  dec_scaler_for_steer: 0.8016544959669116
+  downscale_factor: 0.2056853261241723
+  speed_lookahead_for_steer: 0.12024260883626402
+  future_constant: 0.04092421591686435
+  KP: 1.0713053723158381
+  KD: 0.03272940683166978
+user_attrs:
+  lap_times:
+  - 7.739999999999836
+  - 7.739999999999835
+  mean_abs_d: 0.037904115237016894
+  dsteer_rms: 0.027075730980794695
+  d_weave_rms: 0.004253854721109481
