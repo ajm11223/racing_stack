@@ -88,7 +88,7 @@ ros2 bag record -o "$OUT"/bag \
   /vesc/high_level/ackermann_cmd /vesc/ackermann_cmd \
   /vesc/commands/servo/position /vesc/sensors/imu /vesc/sensors/core /vesc/odom \
   /imu/data /l1_distance /lookahead_point \
-  /controller/latency /state_machine/latency /tf /tf_static
+  /controller/latency /controller/debug /state_machine/latency /tf /tf_static
 
 echo
 echo "[capture] 완료 -> $OUT"
