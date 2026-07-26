@@ -52,6 +52,23 @@ for N in /controller_manager /state_machine; do
     ros2 param dump "$N" > "$OUT"/meta/params$(echo "$N" | tr / _).yaml 2>&1 || true
 done
 
+# measure 확인. /controller/debug 퍼블리셔는 노드 __init__ 에서만 만들어지므로
+# 나중에 param set 으로 켤 수 없습니다. 꺼진 채로 녹화하면 그 토픽이 조용히
+# 빈 채로 남고, 주행이 끝난 뒤에야 알게 됩니다 — 지금 멈추는 편이 낫습니다.
+MEASURE=$(ros2 param get /controller_manager measure 2>/dev/null | grep -oiE 'true|false' | head -1)
+echo "measure:      ${MEASURE:-unknown}" >> "$OUT"/meta/run_info.yaml
+if [ "${MEASURE,,}" != "true" ]; then
+    echo
+    echo "  !! measure=${MEASURE:-unknown} 입니다. /controller/debug 가 발행되지 않습니다."
+    echo "     퍼블리셔는 노드 시작 시점에만 생성되므로 'ros2 param set' 으로는 못 켭니다."
+    echo "     스택을 measure:=true 로 다시 띄우세요:"
+    echo
+    echo "       ros2 launch stack_master race.launch.xml sim:=false map:=$(grep -oP 'map:=\K\S+' "$OUT"/meta/launch_cmdline.txt | head -1 || echo s) use_map:=true measure:=true"
+    echo
+    read -r -p "  그래도 이대로 녹화할까요? [y/N] " ANS
+    [ "${ANS,,}" = "y" ] || { echo "  중단합니다."; rm -rf "$OUT"; exit 1; }
+fi
+
 # ── 4. 설정 스냅샷 ────────────────────────────────────────────────────
 MAP=$(grep -oP 'map:=\K\S+' "$OUT"/meta/launch_cmdline.txt | head -1)
 MAP="${MAP:-s}"
