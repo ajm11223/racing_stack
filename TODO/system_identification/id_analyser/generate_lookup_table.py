@@ -1,12 +1,51 @@
+import argparse
 import os
-import rospkg
+from dataclasses import dataclass
 from datetime import datetime
 from scipy.integrate import odeint
-import fire
 import numpy as np
 import matplotlib.pyplot as plt
-from pbl_config import CarConfig, PacejkaTireConfig, load_car_config_ros, load_pacejka_tire_config_ros
+from helpers.load_model import get_dotdict
 from helpers.vehicle_dynamics import vehicle_dynamics
+
+# ROS2 port (2026-07-26): upstream pulled the car/tire configs from ForzaETH's
+# `pbl_config` package, which we don't vendor. Both configs are plain parameter
+# bags, so they are built here from the id_analyser model file that
+# analyse_tires.py already writes (models/<name>/<name>_pacejka.txt).
+
+
+@dataclass
+class CarConfig:
+    m: float
+    lf: float
+    lr: float
+    h_cg: float
+    Iz: float
+
+
+@dataclass
+class PacejkaTireConfig:
+    friction_coeff: float
+    Bf: float
+    Cf: float
+    Df: float
+    Ef: float
+    Br: float
+    Cr: float
+    Dr: float
+    Er: float
+
+
+def load_configs(model_name, mu=None):
+    """model_name e.g. 'UNICORN2-0726_pacejka'; mu overrides the floor grip."""
+    m = get_dotdict(model_name)
+    car = CarConfig(m=m.m, lf=m.l_f, lr=m.l_r, h_cg=m.h_cg, Iz=m.I_z)
+    Bf, Cf, Df, Ef = m.C_Pf
+    Br, Cr, Dr, Er = m.C_Pr
+    tire = PacejkaTireConfig(
+        friction_coeff=m.mu if mu is None else mu,
+        Bf=Bf, Cf=Cf, Df=Df, Ef=Ef, Br=Br, Cr=Cr, Dr=Dr, Er=Er)
+    return car, tire
 
 # Simulation parameters
 SIMULATION_DURATION = 2.0  # seconds
@@ -24,11 +63,8 @@ END_VEL = 7.0  # m/s
 VEL_STEP_SIZE = 0.1  # m/s
 
 class Simulator:
-    def __init__(self,
-                 racecar_version: str,
-                 floor: str):
-        self.car_config: CarConfig = load_car_config_ros(racecar_version)
-        self.pacejka_config: PacejkaTireConfig = load_pacejka_tire_config_ros(racecar_version, floor)
+    def __init__(self, model_name: str, mu: float = None):
+        self.car_config, self.pacejka_config = load_configs(model_name, mu)
         self.sol = None
 
     def func_ST(self, x, t, u):
@@ -44,10 +80,11 @@ class Simulator:
 
 
 class LookupGenerator:
-    def __init__(self, racecar_version: str, floor: str, update_latest: bool= True):
-        self.sim = Simulator(racecar_version, floor)
-        self.racecar_version = racecar_version
-        self.floor = floor
+    def __init__(self, model_name: str, table_name: str, mu: float = None,
+                 update_latest: bool = True):
+        self.sim = Simulator(model_name, mu)
+        self.model_name = model_name
+        self.table_name = table_name
         self.update_latest = update_latest
         self.lookup_table = None
 
@@ -154,28 +191,38 @@ class LookupGenerator:
         plt.show()
 
     def save_lookup(self):
-        rospack = rospkg.RosPack()
-        path = rospack.get_path('stack_master')
-        timestamp = datetime.now().strftime("%m%d")
-        filename = f"{timestamp}_LUT.csv"
-        archive_folder = os.path.join(path, "config", self.racecar_version, "LUT", self.floor, "archive")
-        if not os.path.exists(archive_folder):
-            os.makedirs(archive_folder)
-        file_path = os.path.join(archive_folder, filename)
-        np.savetxt(file_path, self.lookup_table, delimiter=",")
-        print(f"SAVED LOOKUP TABLE TO: {file_path}")
+        """Write into steering_lookup/cfg with the name LookupSteerAngle expects."""
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        cfg_dir = os.path.join(script_dir, "..", "steering_lookup", "cfg")
+        archive_dir = os.path.join(cfg_dir, "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+
+        stamp = datetime.now().strftime("%m%d")
+        archived = os.path.join(
+            archive_dir, f"{self.table_name}_{stamp}_pacejka_lookup_table.csv")
+        np.savetxt(archived, self.lookup_table, delimiter=",")
+        print(f"SAVED LOOKUP TABLE TO: {archived}")
 
         if self.update_latest:
-            latest_file = os.path.join(path, "config", self.racecar_version, "LUT", self.floor, "default.csv")
-            # create a symlink to the latest model
-            if os.path.exists(latest_file):
-                os.remove(latest_file)
-            os.symlink(file_path, latest_file)
-            print(f"UPDATED LATEST LOOKUP TABLE TO POINT TO: {latest_file}")
+            target = os.path.join(
+                cfg_dir, f"{self.table_name}_pacejka_lookup_table.csv")
+            np.savetxt(target, self.lookup_table, delimiter=",")
+            print(f"UPDATED: {target}\n  -> set LU_table: {self.table_name}")
 
-def main(racecar_version: str, floor: str, update_latest: bool= True):
-    generator: LookupGenerator = LookupGenerator(racecar_version, floor, update_latest)
-    generator.run_generator()
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Generate a MAP steering lookup table from a fitted model.")
+    ap.add_argument("model_name",
+                    help="id_analyser model, e.g. UNICORN2-0726_pacejka")
+    ap.add_argument("table_name",
+                    help="output table prefix, e.g. UNICORN2-0726-urethane")
+    ap.add_argument("--mu", type=float, default=None,
+                    help="floor friction override; omit to use the model's mu")
+    ap.add_argument("--no-update-latest", action="store_true")
+    a = ap.parse_args()
+    LookupGenerator(a.model_name, a.table_name, a.mu,
+                    not a.no_update_latest).run_generator()
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    main()

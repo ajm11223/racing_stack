@@ -31,11 +31,12 @@ class TireAnalyser:
     #               "/vesc/sensors/imu/raw": ["linear_acceleration.x", "linear_acceleration.y"]}
     self.cmd_topic = "/vesc/commands/servo/position"
 
-    field_dict = {"/state_estimation/odom": ["twist.twist.angular.z"],
-                  "/car_state/odom": ["twist.twist.linear.x", "twist.twist.linear.y"], 
-                  #"/vesc/low_level/ackermann_cmd_mux/output": ["drive.speed", "drive.acceleration", "drive.steering_angle"],
+    # our stack publishes no /state_estimation/odom and no imu/raw: yaw rate
+    # comes off /car_state/odom, the IMU topic is /vesc/sensors/imu.
+    field_dict = {"/car_state/odom": ["twist.twist.linear.x", "twist.twist.linear.y",
+                                      "twist.twist.angular.z"],
                   self.cmd_topic: ["data"],
-                  "/vesc/sensors/imu/raw": ["linear_acceleration.x", "linear_acceleration.y"]}
+                  "/vesc/sensors/imu": ["linear_acceleration.x", "linear_acceleration.y"]}
 
     sim_dict = {"/car_state/odom": ["twist.twist.linear.x", "twist.twist.linear.y", "twist.twist.linear.z", "twist.twist.angular.z"], 
                   "/nav": ["drive.speed", "drive.acceleration", "drive.steering_angle"],

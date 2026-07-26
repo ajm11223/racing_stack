@@ -1,9 +1,12 @@
 import math
-from pbl_config import CarConfig, PacejkaTireConfig
+
+# ROS2 port: the CarConfig/PacejkaTireConfig types came from ForzaETH's
+# pbl_config, which we don't vendor. generate_lookup_table.py now supplies
+# equivalent dataclasses built from the id_analyser model files.
 
 g_ = 9.81
 
-def vehicle_dynamics(x, uInit, car_config: CarConfig, pacejka_config: PacejkaTireConfig):
+def vehicle_dynamics(x, uInit, car_config, pacejka_config):
     """
     vehicleDynamics_st - single-track vehicle dynamics
     reference point: center of mass
