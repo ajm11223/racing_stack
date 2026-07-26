@@ -33,10 +33,21 @@
   <arg name="use_map" default="false"
        description="Lateral control: false = original Pure-Pursuit controller (controller_manager exec, controller.yaml); true = separate MAP steering-lookup controller (map_controller_manager exec, controller_map.yaml). Two distinct execs so the pure-PP code stays untouched."/>
   <arg name="lu_table" default="UNICORN2-0410"
-       description="MAP lookup table prefix (steering_lookup cfg). Ignored in sim: forced to SIM_linear so a real-car table is never used against sim physics."/>
+       description="MAP lookup table prefix (steering_lookup cfg). Used in sim AND on the car since 2026-07-26 (see the note below)."/>
   <arg name="use_chord_cap" default="false"
        description="Pure-Pursuit only (use_map:=false): enable the MAP-style L1 chord-cap that smooths corner-entry L1 reduction. Live-tunable in rqt too (use_chord_cap + l1_chord_err). No effect on the MAP controller (always capped)."/>
+  <!-- 2026-07-26: the sim no longer forces SIM_linear. That table is a purely
+       kinematic extrapolation with NO tyre saturation - it believes 3.05 g of
+       lateral acceleration is reachable, against 1.07 g measured on the car
+       (UNICORN2-0410) and ~1.05 g implied by the sim's own mu=1.0489. It made
+       the MAP feed-forward command ~40% too little steering above ~6 m/s^2
+       (understeer), and it disagreed with headless fast_tune, which has always
+       used UNICORN2-0410. With C_Sf calibrated to the car (4.718 -> 3.80) the
+       original rationale - "never use a real-car table against sim physics" -
+       is inverted: the sim physics now matches the car, so the car's table is
+       the correct one for both.
   <let name="lu_table" value="SIM_linear" if="$(var sim)"/>
+  -->
   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
   <let name="racecar_version" value="SIM" if="$(var sim)"/>
   <let name="racecar_version" value="CAR" unless="$(var sim)"/>

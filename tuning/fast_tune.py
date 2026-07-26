@@ -85,7 +85,13 @@ CTRL_YAMLS = {
     "map": f"{STACK}/stack_master/config/controller_map.yaml",
 }
 # search dims that only exist in the MAP controller
-MAP_ONLY_DIMS = ("l1_chord_err", "lat_err_steer_coeff")
+# v9 2026-07-26: l1_chord_err moved out of MAP-only. The PP controller has had
+# the chord-cap available since the use_chord_cap port, and the head-to-head
+# ablation (PP+cap vs MAP) needs the cap STRENGTH tuned for PP too - frozen at
+# controller.yaml's 1.0 the cap can never bind, so PP would be compared with
+# the feature effectively switched off. lat_err_steer_coeff stays MAP-only
+# (it scales the lookup feed-forward, which PP does not have).
+MAP_ONLY_DIMS = ("lat_err_steer_coeff",)
 # dims searched for PP only. In MAP the chord-error cap (l1_chord_err) already
 # shortens L1 on previewed curvature, so searching curvature_factor alongside it
 # lets the two mechanisms cancel each other out and wastes a dimension. Excluded
@@ -105,6 +111,18 @@ CTRL_EVERY = 2           # -> control at exactly 50 Hz, matching the stack
 # replay of v5 #6327 (lap 10.7 s, wall contact at s~21). Rounded to physics
 # steps (10 ms each).
 LATENCY_S = 0.03
+# v9 (2026-07-26): low-frequency lateral disturbance, calibrated on the real
+# car. plantid_0726_2027 shows 0-2 Hz lateral motion the clean sim lacks
+# (weave 0.00689 vs 0.00466, mean|d| 0.0702 vs 0.0518 with the same yaml) -
+# road/grip unevenness, NOT sensor noise (>3 Hz content is only 3 mm rms).
+# Injected as an Ornstein-Uhlenbeck process ADDED TO THE WHEEL ANGLE at the
+# physics input (a yaw-moment disturbance the controller never sees, only
+# feels). sigma=0.025/tau=0.7 reproduces the car; fixed seeds keep the
+# objective deterministic. Without this the tuner over-values short-L1/hot-KP
+# sets by ~13x (gap v8-v7b: +0.07 clean -> +0.93 disturbed), which is exactly
+# the class of solution that oscillated on the car.
+OU_TAU = 0.7             # s; puts the disturbance in the measured 0-2 Hz band
+OU_SEEDS = (11, 22, 33)  # same for every trial -> deterministic objective
 SCALING_KEY = "/speed_sector_tuner:Sector0.scaling"
 
 # args consumed by Controller.__init__ in order (mirror controller_manager)
@@ -202,11 +220,13 @@ class FastLapSim:
         return float(np.sqrt(win_ss.max() / win))
 
     def evaluate(self, p, n_laps=4, max_lap_time=60.0, offtrack_d=0.7,
-                 record=None):
+                 record=None, ou_sigma=0.0, ou_tau=OU_TAU, ou_seed=0):
         """Standing start + warmup lap + n measured laps. Mirrors the live
         tuner's metrics. Raises RuntimeError(progress_frac) on failure.
         record: optional list; measured-lap samples are appended as
-        (lap_no, s, x, y, d, speed, steer_cmd)."""
+        (lap_no, s, x, y, d, speed, steer_cmd).
+        ou_sigma > 0 adds the calibrated OU wheel-angle disturbance (see the
+        OU_TAU comment above); ou_seed fixes its realisation."""
         scaling = float(p.get(SCALING_KEY, 1.0))
         wp = self.base_wpnts.copy()
         wp[:, 2] *= scaling                      # sector_tuner equivalent
@@ -214,6 +234,11 @@ class FastLapSim:
 
         obs, _, done, _ = self.env.reset(poses=np.array([self.start_pose]))
         dt_ctrl = CTRL_EVERY / PHYS_HZ
+        # OU disturbance state (exact discretisation of x' = -x/tau + noise)
+        ou_rng = np.random.default_rng(ou_seed)
+        ou = 0.0
+        ou_a = math.exp(-1.0 / (PHYS_HZ * ou_tau))
+        ou_b = ou_sigma * math.sqrt(1.0 - ou_a * ou_a)
         # actuation delay line: each physics step applies the command issued
         # lat_steps steps earlier (seeded with a standstill command)
         delay_line = deque([(0.0, 0.0)] * self.lat_steps)
@@ -300,8 +325,10 @@ class FastLapSim:
             for _ in range(CTRL_EVERY):
                 delay_line.append((steer_cmd, speed_cmd))
                 st_cmd, sp_cmd = delay_line.popleft()
+                # disturbance enters at the WHEEL, invisible to the controller
+                ou = ou_a * ou + ou_b * ou_rng.standard_normal()
                 obs, _, done, _ = self.env.step(
-                    np.array([[st_cmd, sp_cmd]]))
+                    np.array([[st_cmd + ou, sp_cmd]]))
             t += dt_ctrl
 
         return {
@@ -314,6 +341,22 @@ class FastLapSim:
             "dsteer_worst": float(np.max([m[5] for m in lap_metrics])),
             "d_weave_worst": float(np.max([m[6] for m in lap_metrics])),
         }
+
+    def evaluate_ou(self, p, ou_sigma, n_laps=3, seeds=OU_SEEDS, **kw):
+        """Deterministic multi-seed evaluation under the OU disturbance:
+        mean metrics over the fixed seeds, max for the *_worst ones. Any seed
+        failing fails the whole evaluation (robustness gate)."""
+        runs = [self.evaluate(p, n_laps=n_laps, ou_sigma=ou_sigma,
+                              ou_seed=s, **kw) for s in seeds]
+        out = {}
+        for k in runs[0]:
+            if k == "lap_times":
+                out[k] = [float(np.mean(v)) for v in zip(*[r[k] for r in runs])]
+            elif k.endswith("_worst") or k == "max_abs_d":
+                out[k] = float(np.max([r[k] for r in runs]))
+            else:
+                out[k] = float(np.mean([r[k] for r in runs]))
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -420,13 +463,21 @@ def make_objective(cfg, ctrl="pp"):
               if not k.startswith("/")}       # node-level frozen keys are N/A here
     sim = FastLapSim(ctrl=ctrl)
 
+    # v9: evaluate under the calibrated OU disturbance (see OU_TAU above).
+    # ou_sigma lives in tuner_config objective:; 0 falls back to the clean sim.
+    ou_sigma = float(ob.get("ou_sigma", 0.0))
+    ou_laps = int(ob.get("ou_laps", 3))
+
     def objective(trial):
         p = dict(frozen)
         for name, b in space.items():
             p[name] = trial.suggest_float(name, b["low"], b["high"],
                                           step=b.get("step"))
         try:
-            m = sim.evaluate(p)
+            if ou_sigma > 0.0:
+                m = sim.evaluate_ou(p, ou_sigma, n_laps=ou_laps)
+            else:
+                m = sim.evaluate(p)
         except RuntimeError as e:
             reason, frac = str(e).rsplit("|", 1)
             cost = ob["fail_penalty"] - ob["progress_bonus"] * float(frac)
@@ -498,7 +549,7 @@ def main():
                          "Pursuit (controller.yaml), map = MAP variant "
                          "(controller_map.yaml)")
     ap.add_argument("--study", default=None,
-                    help="default: controller_fast_v7c_<ctrl>")
+                    help="default: controller_fast_v9_<ctrl>")
     ap.add_argument("--n-trials", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=max(os.cpu_count() - 2, 1))
     ap.add_argument("--smoke", action="store_true",
@@ -513,7 +564,11 @@ def main():
     ap.add_argument("--by", choices=["cost", "lap"], default="cost")
     args = ap.parse_args()
     if args.study is None:
-        args.study = f"controller_fast_v7c_{args.ctrl}"
+        # v9 2026-07-26: plant recalibrated against the real car (C_Sf 4.718
+        # -> 3.80, OU disturbance sigma 0.025, UNICORN2-0410 everywhere).
+        # Costs from v7c and earlier were measured on a DIFFERENT plant and
+        # must not mix into this ranking -> fresh study name.
+        args.study = f"controller_fast_v9_{args.ctrl}"
     cfg = load_cfg(args.config)
 
     if args.smoke:

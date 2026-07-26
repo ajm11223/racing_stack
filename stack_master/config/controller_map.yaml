@@ -1,17 +1,17 @@
 controller_manager:
   ros__parameters:
-    t_clip_min: 0.840471
-    t_clip_max: 6.659173
-    m_l1: 0.390225
-    q_l1: 0.98477
-    speed_lookahead: 0.107371
-    lat_err_coeff: 0.7889
-    acc_scaler_for_steer: 1.171272
-    dec_scaler_for_steer: 0.895355
+    t_clip_min: 0.66858
+    t_clip_max: 6.250521
+    m_l1: 0.395456
+    q_l1: -0.290604
+    speed_lookahead: 0.209244
+    lat_err_coeff: 0.688739
+    acc_scaler_for_steer: 1.197008
+    dec_scaler_for_steer: 0.847546
     start_scale_speed: 6.5
     end_scale_speed: 10.0
-    downscale_factor: 0.100734
-    speed_lookahead_for_steer: 0.161278
+    downscale_factor: 0.076216
+    speed_lookahead_for_steer: 0.235613
     trailing_gap: 2.5
     trailing_vel_gain: 0.25
     trailing_p_gain: 1.35
@@ -19,20 +19,20 @@ controller_manager:
     trailing_d_gain: 1.0
     blind_trailing_speed: 1.5
     curvature_factor: 0.0
-    speed_factor_for_lat_err: 0.48916
-    speed_factor_for_curvature: 1.612651
-    KP: 0.119782
+    speed_factor_for_lat_err: 1.648997
+    speed_factor_for_curvature: 0.850294
+    KP: 0.4788
     KI: 0.0
-    KD: 0.000412
+    KD: 0.040975
     heading_error_thres: 10.0
     steer_gain_for_speed: 1.0
-    future_constant: 0.012762
+    future_constant: 0.017577
     AEB_thres: 0.5
     speed_diff_thres: 0.1
     start_speed: 10.0
     start_curvature_factor: 1.5
-    l1_chord_err: 0.064019
-    lat_err_steer_coeff: 0.451852
+    l1_chord_err: 0.791848
+    lat_err_steer_coeff: 0.03894
     ftg_debug: true
     ftg_max_lidar_dist: 4.0
     ftg_max_speed: 2.0
@@ -44,5 +44,6 @@ controller_manager:
     ftg_steer_ema: 0.0
     ftg_max_steer: 0.4
     use_map: true
-    LU_table: SIM_linear
+    LU_table: UNICORN2-0410
     save_params: false
+    use_chord_cap: 1.0

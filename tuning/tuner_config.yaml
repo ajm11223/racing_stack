@@ -62,7 +62,18 @@ objective:
   # window, forcing every corner smooth (user found curvature_factor 0.02 fixes
   # it by hand; this makes the tuner discover that class of fix itself).
   w_osc_worst: 40.0            # cost per rad of worst-window steer-delta RMS
-  w_weave_worst: 600.0         # cost per m of worst-window d-increment RMS
+  # v9 2026-07-26: 600 -> 200. In v7c this term took 18% of the cost
+  # (3.54/19.05) and distorted the base objective, yet bought nothing:
+  # dsteer_rms moved -2% (noise) and d_weave_rms got 12% WORSE. The real
+  # discriminator turned out to be the OU disturbance below, not this weight.
+  w_weave_worst: 200.0         # cost per m of worst-window d-increment RMS
+  # v9: low-frequency lateral disturbance calibrated on plantid_0726_2027.
+  # sigma 0.025 rad reproduces the car's weave (0.00652 vs 0.00689 measured)
+  # and mean|d| (0.0728 vs 0.0702). Evaluated over the fixed seeds in
+  # fast_tune.OU_SEEDS so the objective stays deterministic for TPE.
+  # Set to 0.0 to fall back to the old clean-plant behaviour.
+  ou_sigma: 0.025              # rad, stationary std of the OU wheel disturbance
+  ou_laps: 3                   # measured laps per seed (3 seeds -> 2.25x cost)
   fail_penalty: 120.0          # base cost for crash/stuck/offtrack/timeout
   progress_bonus: 5.0          # subtracted x (progress fraction) on failure
 
@@ -79,7 +90,11 @@ params:
   q_l1:                      {enabled: true,  low: -0.30, high: 1.00}
   t_clip_min:                {enabled: true,  low: 0.60, high: 2.50}
   t_clip_max:                {enabled: true,  low: 3.00, high: 8.00}
-  curvature_factor:          {enabled: true,  low: 0.00, high: 0.25}
+  # v9 2026-07-26: DISABLED and frozen at 0.0 (see frozen: below). The v9
+  # ablation compares PP+chord-cap against MAP as L1-shaping mechanisms, so the
+  # older curvature_factor shaping has to be out of the picture on BOTH sides
+  # or the comparison is confounded. It was already excluded for MAP.
+  curvature_factor:          {enabled: false, low: 0.00, high: 0.25}
   speed_lookahead:           {enabled: true,  low: 0.10, high: 0.40}
   speed_factor_for_lat_err:  {enabled: true,  low: 0.20, high: 2.00}
   speed_factor_for_curvature: {enabled: true, low: 0.30, high: 2.00}
@@ -150,6 +165,14 @@ frozen:
   # KI only: KP/KD are search dimensions now; KI stays off (windup risk, and
   # controller.yaml still carries an old nonzero value).
   KI: 0.0
+  # v9: curvature_factor pinned at 0 for both controllers so the PP+chord-cap
+  # vs MAP comparison isolates the two L1-shaping mechanisms under test.
+  # Spelled out here rather than left to the controller yamls (controller.yaml
+  # still carries 0.234 from the v7b hand-tuning).
+  curvature_factor: 0.0
+  # PP runs must have the chord-cap actually switched on; its strength
+  # (l1_chord_err) is a search dimension for both controllers as of v9.
+  use_chord_cap: true
   # steer-downscale band anchor, pinned at the current yaml values (both
   # controller.yaml and controller_map.yaml carry 6.5 / 10.0). Not searched;
   # spelled out here so every trial gets the same band no matter what the

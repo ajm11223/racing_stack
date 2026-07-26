@@ -1,7 +1,7 @@
 # Vehicle dynamics model parameters (single-track model fed to the f1tenth gym
 # simulator at gym.make(params=...)). Renamed from sim_params.yaml.
 mu: 1.0489 #1.0489  # surface friction coefficient
-C_Sf: 4.718 # Cornering stiffness coefficient, front
+C_Sf: 3.80 # Cornering stiffness coefficient, front
 C_Sr: 5.4562 # Cornering stiffness coefficient, rear
 lf: 0.15875 # Distance from center of gravity to front axle
 lr: 0.17145 # Distance from center of gravity to rear axle
