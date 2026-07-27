@@ -36,6 +36,8 @@
        description="MAP lookup table prefix (steering_lookup cfg). Ignored in sim: forced to SIM_linear so a real-car table is never used against sim physics."/>
   <arg name="use_chord_cap" default="false"
        description="Pure-Pursuit only (use_map:=false): enable the MAP-style L1 chord-cap that smooths corner-entry L1 reduction. Live-tunable in rqt too (use_chord_cap + l1_chord_err). No effect on the MAP controller (always capped)."/>
+  <arg name="measure" default="false"
+     description="Publish /controller/latency and /controller/debug (the per-tick trace behind the steering command: eta, lat_acc, lookup output, per-stage scaling, chord cap). Must be set HERE, not with 'ros2 param set' - the publishers are created in __init__, so flipping the param at runtime does nothing. Turn on whenever you are recording a bag you intend to analyse."/>
   <let name="lu_table" value="SIM_linear" if="$(var sim)"/>
   <!-- sim -> SIM config (racecar_f110.ini + veh_dyn_info); real hardware -> CAR. Folder name == racecar_version. -->
   <let name="racecar_version" value="SIM" if="$(var sim)"/>
@@ -127,6 +129,7 @@
     <param name="sim" value="$(var sim)"/>
     <!-- launch arg overrides the yaml default; still live-tunable in rqt -->
     <param name="use_chord_cap" value="$(var use_chord_cap)"/>
+    <param name="measure" value="$(var measure)"/>
   </node>
 
   <!-- use_map:=true: SEPARATE MAP steering-lookup controller (own exec + own
@@ -140,6 +143,7 @@
     <param name="sim" value="$(var sim)"/>
     <param name="use_map" value="true"/>
     <param name="LU_table" value="$(var lu_table)"/>
+    <param name="measure" value="$(var measure)"/>
   </node>
 
   <!-- Debug: live full VESC IMU vs /vesc/odom comparison + CSV log (yaw_log:=true) -->

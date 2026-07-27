@@ -55,7 +55,15 @@
     <let name="pbstream_file" value="$(var maps_dir)/$(var map)/$(var map).pbstream"/>
     <let name="lua_file" value="localization_2d.lua"/>
 
-    <node pkg="cartographer_ros" exec="cartographer_node" name="cartographer_node" output="screen"
+    <!-- output="both", NOT "screen": cartographer aborts (SIGABRT) have been seen without
+         any glog CHECK/FATAL reaching the ROS logger, so the message came from the
+         C++/glibc runtime (heap-corruption abort, uncaught exception, bad_alloc) and went
+         straight to stderr. Under "screen" launch forwards stderr to the terminal only and
+         nothing is persisted (verified: the marker is absent from launch.log). Under
+         "both" the child's stderr is interleaved into the launch log dir's launch.log, so
+         the abort reason survives the run. Read it back with:
+             grep cartographer_node ~/.ros/log/latest/launch.log -->
+    <node pkg="cartographer_ros" exec="cartographer_node" name="cartographer_node" output="both"
           args="-configuration_directory $(var cartographer_config_dir) -configuration_basename $(var lua_file) -load_state_filename $(var pbstream_file) -collect_metrics">
       <param name="use_sim_time" value="false"/>
       <remap from="/imu" to="/vesc/sensors/imu"/>
@@ -74,7 +82,11 @@
       <param name="config_base" value="$(var lua_file)"/>
     </node>
 
-    <node pkg="stack_master" exec="pose_to_odom_node.py" name="pose_to_odom_node" output="screen">
+    <!-- output="both" for the same reason as cartographer_node above: this node is the
+         only absolute-position feed into the EKF (odom1), so when it dies the EKF silently
+         dead-reckons and the covariance diverges. main() has no exception handling, so any
+         raise exits 1 with the traceback on stderr, which "screen" does not persist. -->
+    <node pkg="stack_master" exec="pose_to_odom_node.py" name="pose_to_odom_node" output="both">
       <remap from="pose_in"  to="/tracked_pose"/>
       <remap from="odom_out" to="/tracked_pose/odom"/>
     </node>

@@ -96,6 +96,20 @@ def StartTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType
 
 def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType]:
     """Transitions for being in `StateType.FTGONLY`"""
+    close_to_raceline = (
+        state_machine._check_close_to_raceline(0.05)
+        and state_machine._check_close_to_raceline_heading(20)
+    )
+
+    # 관심 장애물이 하나라도 있으면 FTG 유지
+    if len(state_machine.cur_obstacles_in_interest) != 0:
+        return StateType.FTGONLY, StateType.FTGONLY
+
+    # 관심 장애물이 없을 때만 GB_TRACK 또는 RECOVERY로 전이
+    return NonObstacleTransition(state_machine, close_to_raceline)
+'''    
+def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType]:
+    """Transitions for being in `StateType.FTGONLY`"""
     close_to_raceline = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
     if len(state_machine.cur_obstacles_in_interest) == 0:
         return NonObstacleTransition(state_machine, close_to_raceline)
@@ -113,7 +127,7 @@ def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateTy
             return StateType.OVERTAKE, StateType.OVERTAKE
         else:
             return StateType.FTGONLY, StateType.FTGONLY
-
+'''
 
 ##################################################################################################################
 ##################################################################################################################

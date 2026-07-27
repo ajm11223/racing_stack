@@ -152,6 +152,11 @@ class Controller:
 
         self.start_mode = False
         self.future_lat_err = 0.0
+        # Per-tick trace of the intermediate values behind the steering command.
+        # controller_manager publishes it on /controller/debug when measure:=true;
+        # fast_tune ignores it. Written every tick, so a stale key means that
+        # branch did not run this tick (e.g. the chord cap never engaged).
+        self.dbg = {}
         self.future_lat_e_norm = 0.0
         self.boost_mode = False
 
@@ -333,20 +338,37 @@ class Controller:
         # safety fallback when the MAP lookup is disabled, missing, or fails.
         steering_angle = np.arctan(2*self.wheelbase*np.sin(eta)/L1_distance)
 
+        # --- debug trace (see self.dbg) -------------------------------------
+        # Only the final steering command leaves this class, so a bag can show
+        # WHAT the controller did but never WHY. Recording the intermediate
+        # values costs nothing and makes a run attributable: which stage moved
+        # the command, and whether the lookup was used at all.
+        self.dbg["eta"] = float(eta)
+        self.dbg["speed_for_lu"] = float(speed_for_lu)
+        self.dbg["future_lat_err"] = float(self.future_lat_err)
+        self.dbg["steer_pp"] = float(steering_angle)
+        self.dbg["lat_acc"] = float("nan")
+        self.dbg["steer_map"] = float("nan")
+        self.dbg["map_used"] = 0.0
+        # --------------------------------------------------------------------
+
         if self.use_map and self.steer_lookup is not None:
             # MAP (ROS1 branch restored): lateral acceleration required by the
             # L1 geometry, inverted through the measured steering lookup table
             # so tire slip is compensated at the source. Uses speed_for_lu
             # (lookahead + lat-err adjusted speed), matching the ROS1 original.
             lat_acc = 2 * speed_for_lu**2 * np.sin(eta) / L1_distance
+            self.dbg["lat_acc"] = float(lat_acc)
             if np.isfinite(lat_acc) and np.isfinite(speed_for_lu):
                 try:
                     map_steer = float(self.steer_lookup.lookup_steer_angle(lat_acc, speed_for_lu))
                 except Exception as e:
                     map_steer = np.nan
                     self.logger_warn(f"[Controller] MAP lookup failed ({e}); using PP fallback")
+                self.dbg["steer_map"] = float(map_steer)
                 if np.isfinite(map_steer):
                     steering_angle = map_steer
+                    self.dbg["map_used"] = 1.0
 
         dt = 1.0 / self.loop_rate
 
@@ -354,16 +376,20 @@ class Controller:
 
         # modifying steer based on heading
 
-        steering_angle += self.compute_future_heading_correction(Future_L1_vector, yaw, dt, self.speed_now)
+        head_corr = self.compute_future_heading_correction(Future_L1_vector, yaw, dt, self.speed_now)
+        steering_angle += head_corr
+        self.dbg["head_corr"] = float(head_corr)
 
         # modifying steer based on acceleration
         #########################################
         steering_angle = self.acc_scaling(steering_angle)
         #########################################
+        self.dbg["steer_after_acc"] = float(steering_angle)
 
         # modifying steer based on speed
 
         steering_angle = self.speed_steer_scaling(steering_angle, speed_for_lu)
+        self.dbg["steer_after_speed"] = float(steering_angle)
 
         # modifying steer based on velocity
 
@@ -372,6 +398,7 @@ class Controller:
         # modifying steer based on lateral error
 
         steering_angle = self.steer_scaling_for_lat_err(steering_angle, self.future_lat_err)
+        self.dbg["steer_after_laterr"] = float(steering_angle)
 
         #-------------------------Steering Scaling-----------------------------
 
@@ -437,8 +464,14 @@ class Controller:
         spacing = float(np.median(ds[ds > 0])) if np.any(ds > 0) else 0.1
         n_ahead = max(int(L1_distance / spacing), 2)
         kappa_preview = float(np.mean(np.abs(wp[idx0:idx0 + n_ahead, 5])))
+        self.dbg["kappa_preview"] = kappa_preview
+        self.dbg["L1_uncapped"] = float(L1_distance)
+        self.dbg["L1_cap"] = float("inf")
+        self.dbg["cap_bound"] = 0.0
         if kappa_preview > 1e-4:
             L1_cap = np.sqrt(8.0 * self.l1_chord_err / kappa_preview)
+            self.dbg["L1_cap"] = float(L1_cap)
+            self.dbg["cap_bound"] = 1.0 if L1_cap < L1_distance else 0.0
             L1_distance = max(min(L1_distance, L1_cap), lower_bound)
         # ----------------------------------------------------------------
 

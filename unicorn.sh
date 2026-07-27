@@ -74,6 +74,16 @@ export CYCLONEDDS_URI="file://$_URS_REPO/cyclonedds.xml"
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
 
+# A mass SIGSEGV cascade has hit a dozen unrelated *Python* nodes at once, twice
+# (once correlated with lifting/shaking the car in the air). Pure Python can't
+# segfault from its own logic -- exceptions get caught, not SIGSEGV'd -- so a
+# crash has to originate below the interpreter (rclpy's C extension / cyclonedds),
+# and normally leaves zero trace. faulthandler dumps the Python call stack that
+# was executing at the moment of the segfault to stderr, which "both" launch
+# output now persists into launch.log. Doesn't fix anything; just stops the next
+# occurrence from being another unexplained blank.
+export PYTHONFAULTHANDLER=1
+
 # --- 3) colcon workspace overlay + gym raycaster dir ---
 # colcon generates setup.{bash,zsh,sh}; source the one matching the live shell.
 if [ -n "${ZSH_VERSION:-}" ]; then _urs_setup=setup.zsh; else _urs_setup=setup.bash; fi

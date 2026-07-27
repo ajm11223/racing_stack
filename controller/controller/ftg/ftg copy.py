@@ -129,12 +129,9 @@ class FTG:
                 b = self._bubble_beams(proc[i + 1])
                 free[max(0, i + 1 - b): i + 1] = False
 
-        # Stop when there is no usable contiguous gap instead of steering
-        # toward a single farthest LiDAR return.
+        # largest contiguous free run; fall back to farthest point
         gl, gr = self._largest_run(free)
-        if gr <= gl:
-            return 0.0, 0.0
-        mid = (gl + gr) // 2
+        mid = (gl + gr) // 2 if gr > gl else int(np.argmax(proc))
 
         # steer toward the gap centre (0 = forward, + = left), then EMA-smooth
         raw_steer = float(np.clip(base_angle + mid * self.angle_inc,

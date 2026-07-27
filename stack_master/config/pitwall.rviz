@@ -821,6 +821,18 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /best_gap/markers
           Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: FTG used LiDAR + FOV
+          Namespaces:
+            {}
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /scan_proc/markers
+          Value: true
       Enabled: true
       Name: CONTROL
     - Class: rviz_common/Group

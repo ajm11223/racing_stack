@@ -561,6 +561,19 @@ class ObstacleSpliner(Node):
         d = np.cumsum(dp)                            # cumsum along the segments
         d = np.hstack([[0], d])                      # add distance from first point
         l = d[-1]                                    # length of point sequence
+        # An evasion spline is a short local detour; it can never legitimately be as
+        # long as a full lap. A garbage car pose (e.g. a localization glitch) makes the
+        # seed/target points wildly apart, blowing up `l` and therefore nSamples -- the
+        # np.linspace/np.zeros below then try to allocate tens of GB and kill the node.
+        # Bail out the same way the TRACKBOUNDS check below does instead of crashing.
+        if not np.isfinite(l) or l <= 0 or (self.gb_max_s is not None and l > self.gb_max_s):
+            self.get_logger().warn(
+                f"[{self.name}]: Evasion spline length {l} implausible (max {self.gb_max_s}), aborting evasion",
+                throttle_duration_sec=2,
+            )
+            wpnts.header.stamp = self.get_clock().now().to_msg()
+            wpnts.header.frame_id = "map"
+            return wpnts, mrks
         nSamples = int(l / wpnt_dist)                # number of samples
         s, r = np.linspace(0, l, nSamples, retstep=True)  # sample parameter and step
 

@@ -90,7 +90,7 @@ class ControllerManager(Node):
         self.timer = None
 
         self.use_sim = self._get_param('sim', False)
-        self.wheelbase = self._get_param('wheelbase', 0.321)
+        self.wheelbase = self._get_param('wheelbase', 0.33)
         self.measuring = self._get_param('measure', False)
         self.state_machine_rate = self._get_param('state_machine_rate', 40)
 

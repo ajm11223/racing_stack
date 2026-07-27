@@ -16,7 +16,7 @@ from frenet_conversion.frenet_converter import FrenetConverter
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Bool
+from std_msgs.msg import Float32, Float32MultiArray, Bool
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -53,6 +53,27 @@ FTG_PARAMS = [
     'ftg_debug', 'ftg_max_lidar_dist', 'ftg_max_speed', 'ftg_track_width',
     'ftg_front_fov_deg', 'ftg_smooth_deg', 'ftg_disp_thresh', 'ftg_bubble_m',
     'ftg_steer_ema', 'ftg_max_steer',
+]
+
+# /controller/debug layout (measure:=true only). Matches controller_manager.py's
+# DEBUG_FIELDS - map_controller.py's self.dbg already fills these every tick,
+# this node just wasn't publishing them yet.
+DEBUG_FIELDS = [
+    'eta',                # rad, bearing to the L1 point — the direct cause of the command
+    'speed_for_lu',       # m/s, speed fed to the steering lookup (not the actual speed)
+    'lat_acc',            # m/s^2, lateral acceleration demanded of the lookup
+    'steer_pp',           # rad, pure-pursuit geometry before MAP / scaling
+    'steer_map',          # rad, lookup output (NaN if not consulted)
+    'map_used',           # 1 = lookup output used, 0 = fell back to pure pursuit
+    'head_corr',          # rad, heading PID contribution (KP/KI/KD)
+    'steer_after_acc',    # rad, after acc_scaling
+    'steer_after_speed',  # rad, after speed_steer_scaling
+    'steer_after_laterr', # rad, after steer_scaling_for_lat_err (final, pre-clip)
+    'kappa_preview',      # 1/m, mean |kappa| over [car, car+L1]
+    'L1_uncapped',        # m, L1 before the chord cap
+    'L1_cap',             # m, the cap itself (inf when kappa ~ 0)
+    'cap_bound',          # 1 = the cap actually shortened L1 this tick
+    'future_lat_err',     # m, predicted lateral error driving the scalings
 ]
 
 
@@ -101,7 +122,7 @@ class ControllerManager(Node):
         self.timer = None
 
         self.use_sim = self._get_param('sim', False)
-        self.wheelbase = self._get_param('wheelbase', 0.321)
+        self.wheelbase = self._get_param('wheelbase', 0.33)
 
         # MAP steering lookup (on/off + table selection; both live-tunable).
         # Load failures never kill the node: use_map just falls back to False.
@@ -139,6 +160,13 @@ class ControllerManager(Node):
         self.drive_pub = self.create_publisher(AckermannDriveStamped, self.publish_topic, 10)
         if self.measuring:
             self.measure_pub = self.create_publisher(Float32, '/controller/latency', 10)
+            # Per-tick trace of the values behind the steering command. Without
+            # it a bag shows only the final angle, so a deviation cannot be
+            # attributed: was the lookup wrong, did a scaling stage amplify it,
+            # did the chord cap bind? Layout is DEBUG_FIELDS above; publish it
+            # alongside /car_state/odom_frenet and index everything by s.
+            self.debug_pub = self.create_publisher(
+                Float32MultiArray, '/controller/debug', 10)
 
         # FTG controller (params injected from /state_machine/* equivalents)
         self.ftg_controller = FTG(
@@ -437,6 +465,11 @@ class ControllerManager(Node):
             msg = Float32()
             msg.data = float(1/(end-start))
             self.measure_pub.publish(msg)
+            dbg = getattr(self.controller, 'dbg', None)
+            if dbg:
+                dm = Float32MultiArray()
+                dm.data = [float(dbg.get(k, float('nan'))) for k in DEBUG_FIELDS]
+                self.debug_pub.publish(dm)
 
     def mapping_loop(self):
         if self.scan is None:

@@ -1,43 +1,54 @@
+#  v11 실차 m_l1 스윕 - D_ml1_480
+#  m_l1 = 0.48   t_clip_min = 1.003764   (베이스 #5080, 나머지 15개 파라미터 고정)
+#  목적: 한계 탐색. 시뮬 0.50은 오프트랙이었음 - C 결과 보고 진행 판단
+
+#  배경: 실차 10개 후보 분석에서 m_l1 이 클수록 cost/랩/weave 전부 좋아짐
+#        (Pearson -0.800, Spearman -0.817, 순열검정 p=0.0083, leave-one-out 최악 -0.755).
+#        후보 전체가 m_l1 0.3512~0.3862 에 몰려 있어 최적점이 그 위에 있을 가능성이 큼.
+#        시뮬 순위는 실차와 상관 없음(Spearman -0.32 ~ -0.64)이므로 실차에서 직접 찾는다.
+
+#  측정 조건: 후보당 4랩 이상(랩간 노이즈 σ18.8 vs 후보간 σ21.0), 상대차/장애물 없이,
+#             scaling 1.04, 연속 세션. 라벨 v11_D_ml1_480
 controller_manager:
   ros__parameters:
-    t_clip_min: 0.7809
-    t_clip_max: 6.9949
-    m_l1: 0.3647
-    q_l1: 0.0534
-    speed_lookahead: 0.1002
-    lat_err_coeff: 0.839
-    acc_scaler_for_steer: 1.2023
-    dec_scaler_for_steer: 1.0218
+    t_clip_min: 1.003764
+    t_clip_max: 6.450728
+    m_l1: 0.48
+    q_l1: -0.254237
+    speed_lookahead: 0.203139
+    lat_err_coeff: 0.707748
+    acc_scaler_for_steer: 1.162871
+    dec_scaler_for_steer: 0.83953
     start_scale_speed: 6.5
     end_scale_speed: 10.0
-    downscale_factor: 0.6531
-    speed_lookahead_for_steer: 0.2839
-    trailing_gap: 2.5
+    downscale_factor: 0.284945
+    speed_lookahead_for_steer: 0.284336
+    trailing_gap: 1.5 #2.5
     trailing_vel_gain: 0.25
     trailing_p_gain: 1.35
     trailing_i_gain: 0.0
     trailing_d_gain: 1.0
     blind_trailing_speed: 1.5
     curvature_factor: 0.0
-    speed_factor_for_lat_err: 0.356
-    speed_factor_for_curvature: 1.1601
-    KP: 0.0366
+    speed_factor_for_lat_err: 1.135791
+    speed_factor_for_curvature: 1.443737
+    KP: 0.317897
     KI: 0.0
-    KD: 0.0039
+    KD: 0.033967
     heading_error_thres: 10.0
     steer_gain_for_speed: 1.0
-    future_constant: 0.0138
+    future_constant: 0.010726
     AEB_thres: 0.5
     speed_diff_thres: 0.1
     start_speed: 10.0
     start_curvature_factor: 1.5
-    l1_chord_err: 0.7471
-    lat_err_steer_coeff: 0.296
+    l1_chord_err: 0.726446
+    lat_err_steer_coeff: 0.154858
     ftg_debug: true
     ftg_max_lidar_dist: 4.0
     ftg_max_speed: 2.0
     ftg_track_width: 2.0
-    ftg_front_fov_deg: 80.0
+    ftg_front_fov_deg: 100.0
     ftg_smooth_deg: 1.0
     ftg_disp_thresh: 0.5
     ftg_bubble_m: 0.3
@@ -46,3 +57,4 @@ controller_manager:
     use_map: true
     LU_table: UNICORN2-0410
     save_params: false
+    use_chord_cap: 1.0
