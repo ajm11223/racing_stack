@@ -104,7 +104,13 @@ Detect::~Detect() {}
 
 void Detect::laserCb(const sensor_msgs::msg::LaserScan::ConstSharedPtr msg)
 {
-  scan_msgs = msg;
+  // Keep enough history for the scan-time transform to arrive, but bound the
+  // latency if perception ever falls behind.
+  constexpr std::size_t max_pending_scans = 4;
+  scan_queue_.push_back(msg);
+  if (scan_queue_.size() > max_pending_scans) {
+    scan_queue_.pop_front();
+  }
 }
 
 void Detect::pathCb(const f110_msgs::msg::WpntArray::ConstSharedPtr msg)
@@ -279,11 +285,11 @@ std::vector<std::vector<std::pair<double, double>>> Detect::clustering(const sen
   double d_phi = msg->angle_increment;
   double sigma = sigma_;
 
-  current_stamp_ = this->get_clock()->now();
+  current_stamp_ = rclcpp::Time(msg->header.stamp);
   geometry_msgs::msg::TransformStamped transform;
 
   try {
-    transform = tf_buffer_->lookupTransform("map", "laser", tf2::TimePointZero,
+    transform = tf_buffer_->lookupTransform("map", msg->header.frame_id, current_stamp_,
                                             tf2::durationFromSec(1.0));
   } catch (const tf2::TransformException &ex) {
     RCLCPP_ERROR(this->get_logger(), "[Opponent Detection]: lookup Transform between map and laser not possible: %s", ex.what());
@@ -730,13 +736,24 @@ void Detect::timerCallback()
 {
   // Guard: nothing to do until we have a scan and the global trajectory.
   // (ROS1 blocked on waypoints in the ctor; here we gate the periodic work.)
-  if (!scan_msgs || waypoints_.empty()) {
+  if (scan_queue_.empty() || waypoints_.empty()) {
     return;
   }
 
+  // Consume each LaserScan at most once, after its exact transform is ready.
+  // Reprocessing a cached scan with a newer ego transform makes a fixed obstacle
+  // look like it is moving with the car.
+  const auto scan = scan_queue_.front();
+  const auto scan_stamp = rclcpp::Time(scan->header.stamp);
+  if (!tf_buffer_->canTransform("map", scan->header.frame_id, scan_stamp,
+                                tf2::durationFromSec(0.0))) {
+    return;
+  }
+  scan_queue_.pop_front();
+
   double start_time = this->get_clock()->now().seconds();
   // Clustering
-  std::vector<std::vector<std::pair<double, double>>> objects_pointcloud_list = clustering(scan_msgs);
+  std::vector<std::vector<std::pair<double, double>>> objects_pointcloud_list = clustering(scan);
 
   publishBreakpoints(objects_pointcloud_list);
 

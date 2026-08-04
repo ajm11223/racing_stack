@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from collections import deque
 import math
 import os
 import time
@@ -250,25 +251,23 @@ class ObstacleSD:
             sum += normalize_s(s-mean_s, track_length)**2
         return (sum/len(self.measurments_s))**0.5
 
-    def std_d(self):
-        return np.std(self.measurments_d)
-
     def isStatic(self, track_length):
         # --- get a representative data set for the obstacle ---
         if self.nb_meas > ObstacleSD.min_nb_meas:
             std_s = self.std_s(track_length)
-            std_d = self.std_d()
             # --- create a voting system so that the outliers don't affect much the result ---
-            if (std_s < ObstacleSD.min_std and std_d < ObstacleSD.min_std):
+            # The fitted L-shape center shifts laterally with viewing angle, so
+            # d spread alone is not evidence that an obstacle is moving.
+            if std_s < ObstacleSD.min_std:
                 self.static_count = self.static_count + 1
             # --- assert for sure that an obstacle is dynamic and not static ---
-            elif (std_s > ObstacleSD.max_std or std_d > ObstacleSD.max_std):
+            elif std_s > ObstacleSD.max_std:
                 self.static_count = 0
+            else:
+                # No vote in the hysteresis band: keep the previous classification.
+                return
             self.total_count = self.total_count + 1
             self.staticFlag = self.static_count/self.total_count >= 0.5
-
-        else:
-            self.staticFlag = None
 
 
 class StaticDynamic(Node):
@@ -310,6 +309,7 @@ class StaticDynamic(Node):
         self.track_length = None
         self.opponent_obstacles = []
         self.current_stamp = None
+        self.measurement_queue = deque(maxlen=4)
         self.scans = None
         self.current_id = 1
         self.converter = None
@@ -490,8 +490,7 @@ class StaticDynamic(Node):
     # --- Callbacks ---
 
     def obstacleCallback(self, data):
-        self.meas_obstacles = data.obstacles
-        self.current_stamp = data.header.stamp
+        self.measurement_queue.append((data.obstacles, data.header.stamp))
 
     def pathCallback(self, data):
         self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
@@ -932,16 +931,21 @@ class StaticDynamic(Node):
 
     def timer_callback(self):
         # Gate the loop on the inputs the ROS1 main() waited for before starting.
-        # current_stamp stays None until the first /detect/raw_obstacles arrives;
-        # publishing with a None stamp throws, so wait for it too.
+        # current_stamp stays None until the first detector frame is consumed;
+        # publishing with a None stamp throws, so wait for a queued frame too.
         if (self.car_s is None or self.car_position is None
-                or self.car_orientation is None or self.current_stamp is None):
+                or self.car_orientation is None
+                or (self.current_stamp is None and not self.measurement_queue)):
             return
         if self.measuring:
             start = time.perf_counter()
         self.opponents_predict()
 
-        self.update()
+        # A detector frame may be published less often than this timer fires.
+        # Consume it once so classification votes and TTL are scan-based.
+        if self.measurement_queue:
+            self.meas_obstacles, self.current_stamp = self.measurement_queue.popleft()
+            self.update()
         if self.measuring:
             end = time.perf_counter()
             msg = Float32()

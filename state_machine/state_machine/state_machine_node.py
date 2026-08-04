@@ -94,6 +94,24 @@ class WaypointData:
         self.max_horizon = get(self.name, "max_horizon")
         self.lateral_width_m = get(self.name, "lateral_width_m")
         self.free_scaling_reference_distance_m = get(self.name, "free_scaling_reference_distance_m")
+        # Only the static lattice cache consumes these hard-clearance values.
+        # Defaults keep an older installed config usable during rolling rebuilds.
+        if self.name == "static_avoidance_planner":
+            self.track_boundary_margin_m = get(
+                self.name, "track_boundary_margin_m"
+            )
+            self.obstacle_boundary_margin_m = get(
+                self.name, "obstacle_boundary_margin_m"
+            )
+            self.longitudinal_margin_m = get(
+                self.name, "longitudinal_margin_m"
+            )
+            if self.track_boundary_margin_m is None:
+                self.track_boundary_margin_m = 0.30
+            if self.obstacle_boundary_margin_m is None:
+                self.obstacle_boundary_margin_m = 0.30
+            if self.longitudinal_margin_m is None:
+                self.longitudinal_margin_m = 0.20
         self.latest_threshold = get(self.name, "latest_threshold")
         self.on_spline_front_horizon_thres_m = get(self.name, "on_spline_front_horizon_thres_m")
         self.on_spline_min_dist_thres_m = get(self.name, "on_spline_min_dist_thres_m")
@@ -207,6 +225,7 @@ class StateMachine(Node):
         self.lateral_width_gb_m = self.params.lateral_width_gb_m
         self.gb_horizon_m = self.params.gb_horizon_m
         self.interest_horizon_m = self.params.interest_horizon_m
+        self.gb_dynamic_trailing_distance_m = self.params.gb_dynamic_trailing_distance_m
         self.overtake_min_closing_mps = self.params.overtake_min_closing_mps
 
         self.last_recovery_update_time = None
@@ -776,13 +795,38 @@ class StateMachine(Node):
         return False
 
     def _check_getting_closer(self, threshold_m=3.0) -> bool:
-        if (
-            len(self.obstacles_in_interest) != 0
-            and self.cur_vs - self.obstacles_in_interest[0].vs > -0.5
-        ):
-            return True
-        else:
+        """Check the nearest forward obstacle is within range and not pulling away."""
+        if len(self.obstacles_in_interest) == 0:
             return False
+
+        obstacle = min(
+            self.obstacles_in_interest,
+            key=lambda obs: (obs.s_start - self.cur_s) % self.track_length,
+        )
+        gap = (obstacle.s_start - self.cur_s) % self.track_length
+        return gap < threshold_m and self.cur_vs - obstacle.vs > -0.5
+
+    def _check_gb_trailing_distance(
+        self,
+        static_threshold_m: float = 5.0,
+    ) -> bool:
+        """Allow GB-to-TRAILING only when the nearest obstacle is close enough."""
+        if len(self.cur_obstacles_in_interest) == 0:
+            return False
+
+        obstacle = min(
+            self.cur_obstacles_in_interest,
+            key=lambda obs: (
+                obs.s_start - self.cur_s
+            ) % self.track_length,
+        )
+        gap = (obstacle.s_start - self.cur_s) % self.track_length
+        threshold_m = (
+            static_threshold_m
+            if obstacle.is_static
+            else self.gb_dynamic_trailing_distance_m
+        )
+        return gap <= threshold_m
 
     def _check_enemy_in_front(self) -> bool:
         horizon = self.gb_horizon_m
@@ -792,6 +836,36 @@ class StateMachine(Node):
                 return True
         return False
 
+    def _check_msg_on_spline(self, src_wpnts, wpnts_data: WaypointData) -> bool:
+        """Validate raw planner output without replacing the active cache.
+
+        ``_check_latest_wpnts`` used to initialize the cache first and only then
+        check whether the new path was usable.  A late/disconnected planner frame
+        could therefore destroy a still-valid active path even though the method
+        returned ``False``.  Keep this check side-effect free so replacement is
+        atomic.
+        """
+        if src_wpnts is None or len(src_wpnts.wpnts) == 0:
+            return False
+
+        path_tail_gap = (
+            src_wpnts.wpnts[-1].s_m - self.cur_s
+        ) % self.track_length
+        positions = np.asarray(
+            [[wpnt.x_m, wpnt.y_m] for wpnt in src_wpnts.wpnts],
+            dtype=float,
+        )
+        min_dist = np.min(
+            np.linalg.norm(
+                positions - np.asarray(self.current_position[:2], dtype=float),
+                axis=1,
+            )
+        )
+        return bool(
+            path_tail_gap > wpnts_data.on_spline_front_horizon_thres_m
+            and min_dist < wpnts_data.on_spline_min_dist_thres_m
+        )
+
     def _check_latest_wpnts(self, src_wpnts, wpnts_data: WaypointData):
         # Frozen cache: keep the captured path, do NOT replace it with fresh output.
         # Stay "available" as long as we are still on the held path (on_spline); once
@@ -800,11 +874,26 @@ class StateMachine(Node):
             return bool(wpnts_data.is_init and self._check_on_spline(wpnts_data))
         if src_wpnts is None or len(src_wpnts.wpnts) == 0:
             return False
-        elif (self.now_sec() - time_to_float(src_wpnts.header.stamp)) > wpnts_data.latest_threshold:
+        src_stamp = time_to_float(src_wpnts.header.stamp)
+        if (self.now_sec() - src_stamp) > wpnts_data.latest_threshold:
             return False
-        else:
-            wpnts_data.initialize_traj(src_wpnts)
+
+        # The state loop runs faster than the planners. Do not reinitialize the
+        # same message repeatedly; the already accepted cache remains authoritative.
+        if (
+            wpnts_data.is_init
+            and wpnts_data.stamp is not None
+            and src_stamp <= time_to_float(wpnts_data.stamp)
+        ):
             return bool(self._check_on_spline(wpnts_data))
+
+        # Validate before commit. If the candidate is late/disconnected, preserve
+        # the old cache so a single bad planner frame cannot cause a path drop.
+        if not self._check_msg_on_spline(src_wpnts, wpnts_data):
+            return False
+
+        wpnts_data.initialize_traj(src_wpnts)
+        return True
 
     def _check_ftg(self) -> bool:
         threshold = self.ftg_timer_sec * self.rate_hz
@@ -830,6 +919,95 @@ class StateMachine(Node):
                 return True
         return False
 
+    @staticmethod
+    def _static_obstacle_lateral_bounds(obs):
+        """Match the lattice planner's conservative obstacle d bounds."""
+        half_size = max(float(obs.size), 0.0) / 2.0
+        center_min = float(obs.d_center) - half_size
+        center_max = float(obs.d_center) + half_size
+        d_right = float(obs.d_right)
+        d_left = float(obs.d_left)
+        explicit_bounds_valid = (
+            np.isfinite(d_right)
+            and np.isfinite(d_left)
+            and abs(d_left - d_right) > 1.0e-6
+        )
+        if not explicit_bounds_valid:
+            return center_min, center_max
+        return (
+            min(d_right, d_left, center_min),
+            max(d_right, d_left, center_max),
+        )
+
+    def _static_obstacle_longitudinal_half_extent(self, obs):
+        """Match the lattice planner's wrap-safe obstacle half-length in s."""
+        half_extent = max(float(obs.size), 0.0) / 2.0
+        s_start = float(getattr(obs, "s_start", obs.s_center))
+        s_end = float(getattr(obs, "s_end", obs.s_center))
+        if np.isfinite(s_start) and np.isfinite(s_end):
+            span = (s_end - s_start) % self.max_s
+            if 1.0e-6 < span < self.max_s / 2.0:
+                half_extent = max(half_extent, span / 2.0)
+        return half_extent
+
+    def _check_static_lattice_track_clearance(self, wpnts_data):
+        """Check every lattice centre point against the constant track margin."""
+        if (
+            not wpnts_data.is_init
+            or wpnts_data.array is None
+            or len(wpnts_data.array) == 0
+            or not self.cur_gb_wpnts.list
+            or self.wpnt_dist <= 0.0
+        ):
+            return False, None
+
+        margin = float(wpnts_data.track_boundary_margin_m)
+        minimum_clearance = float("inf")
+        for path_s, path_d in wpnts_data.array[:, 2:4]:
+            index = int(round(float(path_s) / self.wpnt_dist)) % len(
+                self.cur_gb_wpnts.list
+            )
+            gb_wpnt = self.cur_gb_wpnts.list[index]
+            raw_clearance = min(
+                float(path_d) + float(gb_wpnt.d_right),
+                float(gb_wpnt.d_left) - float(path_d),
+            )
+            minimum_clearance = min(
+                minimum_clearance,
+                raw_clearance - margin,
+            )
+        return minimum_clearance > 1.0e-9, minimum_clearance
+
+    def _check_static_lattice_obstacle_clearance(self, wpnts_data, obs):
+        """Check one static obstacle with the lattice planner's constant margins."""
+        obstacle_margin = float(wpnts_data.obstacle_boundary_margin_m)
+        longitudinal_margin = float(wpnts_data.longitudinal_margin_m)
+        obs_min, obs_max = self._static_obstacle_lateral_bounds(obs)
+        inflated_min = obs_min - obstacle_margin
+        inflated_max = obs_max + obstacle_margin
+        half_s = (
+            self._static_obstacle_longitudinal_half_extent(obs)
+            + longitudinal_margin
+        )
+
+        delta_s = (
+            wpnts_data.array[:, 2]
+            - float(obs.s_center)
+            + self.max_s / 2.0
+        ) % self.max_s - self.max_s / 2.0
+        mask = np.abs(delta_s) <= half_s
+        if not np.any(mask):
+            return False, None
+
+        lateral = wpnts_data.array[mask, 3]
+        residual = np.where(
+            lateral < inflated_min,
+            inflated_min - lateral,
+            np.where(lateral > inflated_max, lateral - inflated_max, 0.0),
+        )
+        minimum_clearance = float(np.min(residual))
+        return minimum_clearance <= 1.0e-9, minimum_clearance
+
     def _check_free_frenet(self, wpnts_data) -> bool:
         is_free = True
         closest_obs = None
@@ -847,6 +1025,18 @@ class StateMachine(Node):
         # "GB judged free while an obstacle is right ahead" can be explained
         # (empty obstacle list vs prediction branch vs static/dynamic geom).
         dbg = {"is_init": bool(wpnts_data.is_init), "n_obs": len(obstacles), "obs": []}
+        is_static_lattice = wpnts_data is self.cur_static_avoidance_wpnts
+        if is_static_lattice and wpnts_data.is_init:
+            track_free, track_clearance = (
+                self._check_static_lattice_track_clearance(wpnts_data)
+            )
+            dbg["track_clearance"] = (
+                None
+                if track_clearance is None
+                else round(float(track_clearance), 3)
+            )
+            if not track_free:
+                is_free = False
 
         if wpnts_data.is_init:
             max_gap = (wpnts_data.array[-1, 2] - self.cur_s) % self.max_s
@@ -871,17 +1061,44 @@ class StateMachine(Node):
                             closest_obs = obs
                             min_gap = gap
                     elif gap < max_horizon:
-                        obs_d = obs.d_center
-                        ot_d = 0
-                        if not is_gb_track_wpnts:
-                            avoid_wpnt_idx = np.argmin(abs(wpnts_data.array[:, 2] - obs_s))
-                            ot_d = wpnts_data.list[avoid_wpnt_idx].d_m
-                        min_dist = abs(ot_d - obs_d)
-                        free_dist = min_dist - obs.size / 2 - self.gb_ego_width_m / 2
-                        scaling_factor = np.clip(gap / free_scaling_reference_distance_m, 0.0, 1.0)
-                        rec["branch"] = "static/geom"
-                        rec["free_dist"] = round(float(free_dist), 3)
-                        if free_dist < lateral_width_m * scaling_factor:
+                        if is_static_lattice:
+                            blocked, free_dist = (
+                                self._check_static_lattice_obstacle_clearance(
+                                    wpnts_data, obs
+                                )
+                            )
+                            rec["branch"] = "static/lattice_constant_margin"
+                            rec["free_dist"] = (
+                                None
+                                if free_dist is None
+                                else round(float(free_dist), 3)
+                            )
+                        else:
+                            obs_d = obs.d_center
+                            ot_d = 0
+                            if not is_gb_track_wpnts:
+                                avoid_wpnt_idx = np.argmin(
+                                    abs(wpnts_data.array[:, 2] - obs_s)
+                                )
+                                ot_d = wpnts_data.list[avoid_wpnt_idx].d_m
+                            min_dist = abs(ot_d - obs_d)
+                            free_dist = (
+                                min_dist
+                                - obs.size / 2
+                                - self.gb_ego_width_m / 2
+                            )
+                            scaling_factor = np.clip(
+                                gap / free_scaling_reference_distance_m,
+                                0.0,
+                                1.0,
+                            )
+                            rec["branch"] = "static/geom"
+                            rec["free_dist"] = round(float(free_dist), 3)
+                            blocked = (
+                                free_dist
+                                < lateral_width_m * scaling_factor
+                            )
+                        if blocked:
                             is_free = False
                             rec["blocked"] = True
                             self.get_logger().info(
@@ -1019,7 +1236,7 @@ class StateMachine(Node):
         # on_spline/hyst/killing hysteresis in _check_availability so the car keeps
         # following it through a few skipped solver frames. A cache that stays alive
         # (planner keeps publishing) but is not the current source is left intact so
-        # it can be re-selected instantly with fresh data.
+        # it can be re-selected instantly with fredata.
         if not wpnts_data.is_init:
             return
         if wpnts_data is self._src_cache(self.local_wpnts_src):
@@ -1063,7 +1280,7 @@ class StateMachine(Node):
 
     def _check_static_overtaking_mode(self) -> bool:
         if (
-            self.cur_vs < 3.0
+            self.cur_vs < 8.0
             and self._check_getting_closer(threshold_m=7.0)
             and self._check_latest_wpnts(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
             and self._check_free_frenet(self.cur_static_avoidance_wpnts)
@@ -1075,8 +1292,23 @@ class StateMachine(Node):
 
     def _check_overtaking_mode_sustainability(self) -> bool:
         if self.static_overtaking_mode:
+            # A static lattice path may need to change while OVERTAKE is already
+            # active (for example when a second obstacle is detected after the
+            # first path was cached).  Prefer each strictly newer, fresh, on-spline
+            # planner result; if the planner emits an empty/stale frame, the normal
+            # availability hysteresis below keeps the last valid path.
+            fresh_static_path = self._check_latest_wpnts(
+                self.static_avoidance_wpnts,
+                self.cur_static_avoidance_wpnts,
+            )
             if (
-                self._check_availability(self.static_avoidance_wpnts, self.cur_static_avoidance_wpnts)
+                (
+                    fresh_static_path
+                    or self._check_availability(
+                        self.static_avoidance_wpnts,
+                        self.cur_static_avoidance_wpnts,
+                    )
+                )
                 and self._check_free_frenet(self.cur_static_avoidance_wpnts)
             ):
                 return True
@@ -1086,6 +1318,44 @@ class StateMachine(Node):
                 if self._check_free_frenet(self.cur_avoidance_wpnts):
                     return True
         return False
+
+    def _capture_overtake_path_for_trailing(self) -> bool:
+        """Hold the last OT geometry while changing behavior to TRAILING.
+
+        The recovery cache is used as a neutral, freeze-capable path container.
+        This keeps the controller on the exact last overtake curve instead of
+        jumping laterally to GB when a newly detected obstacle makes OVERTAKE
+        unsustainable.  The normal TRAILING target logic then slows behind the
+        blocker and can advertise it as a new lattice planning target.
+        """
+        source = self._src_cache(StateType.OVERTAKE)
+        target = self.cur_recovery_wpnts
+        if (
+            source is None
+            or not source.is_init
+            or source.array is None
+            or not source.list
+            or not self._check_on_spline(source)
+        ):
+            return False
+
+        target.stamp = source.stamp
+        target.list = list(source.list)
+        target.array = np.array(source.array, copy=True)
+        target.is_init = True
+        target.last_init_sec = self.now_sec()
+        target.init_count += 1
+        target.is_gb_track_wpnts = False
+        target.closest_target = source.closest_target
+        target.closest_gap = source.closest_gap
+        target.free_dbg = source.free_dbg
+        # _hold_recovery_freeze() runs after source selection in the same loop.
+        target.frozen = False
+        self.get_logger().info(
+            "[state_machine] TRAILING holds last OVERTAKE path",
+            throttle_duration_sec=0.5,
+        )
+        return True
 
     ################
     # HELPER FUNCS #
@@ -1316,6 +1586,7 @@ class StateMachine(Node):
 
         rec = self.cur_recovery_wpnts
         avoid = self.cur_avoidance_wpnts
+        static_avoid = self.cur_static_avoidance_wpnts
         snap = {
             "t": round(self.now_sec(), 3),
             "src": self.local_wpnts_src.name,
@@ -1354,6 +1625,37 @@ class StateMachine(Node):
                                else round(self.now_sec() - avoid.last_init_sec, 3)),
                 "reinit_count": avoid.init_count,
                 "is_init": avoid.is_init,
+            },
+            "static_avoidance": {
+                "topic_s": (
+                    s0(self.static_avoidance_wpnts.wpnts)
+                    if self.static_avoidance_wpnts is not None
+                    else None
+                ),
+                "cache_s": s0(static_avoid.list),
+                "cache_last_s": (
+                    round(static_avoid.list[-1].s_m, 3)
+                    if static_avoid.list
+                    else None
+                ),
+                "cache_age": (
+                    None
+                    if static_avoid.stamp is None
+                    else round(
+                        self.now_sec() - time_to_float(static_avoid.stamp),
+                        3,
+                    )
+                ),
+                "reinit_age": (
+                    None
+                    if static_avoid.last_init_sec is None
+                    else round(
+                        self.now_sec() - static_avoid.last_init_sec,
+                        3,
+                    )
+                ),
+                "reinit_count": static_avoid.init_count,
+                "is_init": static_avoid.is_init,
             },
             # Internal slice detail from get_splini_wpts / get_recovery_wpts for
             # THIS loop (None if that source was not used). Shows the exact

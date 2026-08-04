@@ -22,6 +22,7 @@
 #include "frenet_conversion.h"
 #include "grid_filter.h"
 
+#include <deque>
 #include <vector>
 #include <string>
 
@@ -65,7 +66,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr latency_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr on_track_points_pub_;
 
-  sensor_msgs::msg::LaserScan::ConstSharedPtr scan_msgs;
+  std::deque<sensor_msgs::msg::LaserScan::ConstSharedPtr> scan_queue_;
 
   // Parameters (set via ROS params)
   double rate_;

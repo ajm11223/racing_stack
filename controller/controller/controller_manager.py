@@ -38,11 +38,13 @@ L1_PARAMS = [
 ]
 
 # FTG params live-tunable via rqt (controller.yaml). Mapped onto the FTG instance
-# in dyn_param_cb. Disparity-extender tunables are in metres/degrees.
+# in dyn_param_cb. Gap tunables are in metres/degrees.
 FTG_PARAMS = [
     'ftg_debug', 'ftg_max_lidar_dist', 'ftg_max_speed', 'ftg_track_width',
     'ftg_front_fov_deg', 'ftg_smooth_deg', 'ftg_disp_thresh', 'ftg_bubble_m',
-    'ftg_steer_ema', 'ftg_max_steer',
+    'ftg_steer_ema', 'ftg_max_steer', 'ftg_prev_angle_penalty_gain',
+    'ftg_raceline_penalty_gain', 'ftg_raceline_lookahead_m',
+    'ftg_no_gap_speed',
 ]
 
 
@@ -131,10 +133,14 @@ class ControllerManager(Node):
             track_width=self._get_param('ftg_track_width', 2.0),
             front_fov_deg=self._get_param('ftg_front_fov_deg', 90.0),
             smooth_deg=self._get_param('ftg_smooth_deg', 1.0),
-            disp_thresh=self._get_param('ftg_disp_thresh', 0.5),
+            disp_thresh=self._get_param('ftg_disp_thresh', 1.0),
             bubble_m=self._get_param('ftg_bubble_m', 0.30),
             steer_ema=self._get_param('ftg_steer_ema', 0.0),
             max_steer=self._get_param('ftg_max_steer', 0.4),
+            prev_angle_penalty_gain=self._get_param('ftg_prev_angle_penalty_gain', 0.6),
+            raceline_penalty_gain=self._get_param('ftg_raceline_penalty_gain', 0.4),
+            raceline_lookahead_m=self._get_param('ftg_raceline_lookahead_m', 1.5),
+            no_gap_speed=self._get_param('ftg_no_gap_speed', 1.2),
         )
 
         # Subscribers
@@ -252,6 +258,14 @@ class ControllerManager(Node):
             f.STEER_EMA = float(value)
         elif name == 'ftg_max_steer':
             f.MAX_STEER = float(value)
+        elif name == 'ftg_prev_angle_penalty_gain':
+            f.PREV_ANGLE_PENALTY_GAIN = float(value)
+        elif name == 'ftg_raceline_penalty_gain':
+            f.RACELINE_PENALTY_GAIN = float(value)
+        elif name == 'ftg_raceline_lookahead_m':
+            f.RACELINE_LOOKAHEAD_M = float(value)
+        elif name == 'ftg_no_gap_speed':
+            f.NO_GAP_SPEED = float(value)
         elif name == 'ftg_max_speed':
             f.MAX_SPEED = float(value)
             f.recompute_speeds()
@@ -332,6 +346,8 @@ class ControllerManager(Node):
                 self.waypoint_list_in_map.append([waypoint_in_map[0], waypoint_in_map[1], speed, 0, waypoint.s_m, waypoint.kappa_radpm, waypoint.psi_rad, waypoint.ax_mps2, waypoint.d_m])
         self.waypoint_array_in_map = np.array(self.waypoint_list_in_map)
         self.waypoint_safety_counter = 0
+        if data.state == "FTGONLY" and self.state != "FTGONLY":
+            self.ftg_controller.reset_history()
         self.state = data.state
 
     def imu_cb(self, data):
@@ -414,8 +430,11 @@ class ControllerManager(Node):
         return speed, acceleration, jerk, steering_angle
 
     def ftg_cycle(self):
+        raceline_angle = self.ftg_controller.raceline_target_angle(
+            self.waypoints, self.position_in_map)
         speed, steer = self.ftg_controller.process_lidar(
-            self.scan.ranges, self.scan.angle_min, self.scan.angle_increment)
+            self.scan.ranges, self.scan.angle_min, self.scan.angle_increment,
+            raceline_angle=raceline_angle)
         self.get_logger().warning(f"[{self.name}] FTGONLY!!!")
         return speed, steer
 

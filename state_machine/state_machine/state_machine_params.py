@@ -35,6 +35,7 @@ class StateMachineParams:
         "gb_ego_width_m",
         "gb_horizon_m",
         "interest_horizon_m",
+        "gb_dynamic_trailing_distance_m",
         "overtaking_horizon_m",
         "overtake_min_closing_mps",
     }
@@ -123,6 +124,18 @@ class StateMachineParams:
             ),
         )
         self.interest_horizon_m: float = node.get_parameter("interest_horizon_m").value
+
+        self._declare(
+            "gb_dynamic_trailing_distance_m", 10.0,
+            ParameterDescriptor(
+                description="Maximum forward gap for GB-to-TRAILING on a dynamic obstacle [m]",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=0.0, to_value=50.0, step=0.1)],
+            ),
+        )
+        self.gb_dynamic_trailing_distance_m: float = node.get_parameter(
+            "gb_dynamic_trailing_distance_m"
+        ).value
 
         self._declare(
             "overtaking_horizon_m", 6.9,
@@ -225,7 +238,7 @@ class StateMachineParams:
             self.splini_ttl = node.get_parameter("pred_splini_ttl").value
 
         self._declare(
-            "overtaking_ttl_sec", 3.0,
+            "overtaking_ttl_sec", 1.0,
             ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE),
         )
         self.overtaking_ttl_sec: float = node.get_parameter("overtaking_ttl_sec").value

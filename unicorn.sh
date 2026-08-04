@@ -85,8 +85,11 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
 export PYTHONFAULTHANDLER=1
 
 # --- 3) colcon workspace overlay + gym raycaster dir ---
-# colcon generates setup.{bash,zsh,sh}; source the one matching the live shell.
-if [ -n "${ZSH_VERSION:-}" ]; then _urs_setup=setup.zsh; else _urs_setup=setup.bash; fi
+# The conda environment above is the underlay.  Use local_setup here so a stale
+# install/setup.* cannot recursively re-source a system ROS underlay captured by
+# an older mixed-environment build (which otherwise puts /opt/ros ahead of conda
+# and makes Python nodes fail to load their message type support).
+if [ -n "${ZSH_VERSION:-}" ]; then _urs_setup=local_setup.zsh; else _urs_setup=local_setup.bash; fi
 [ -f "$_URS_WS/install/$_urs_setup" ] && source "$_URS_WS/install/$_urs_setup"
 export RAYCASTER_DIR="$_URS_REPO/race_utils/raycaster"
 

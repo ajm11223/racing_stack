@@ -40,7 +40,7 @@ tracking:
     publish_static: true
     ratio_to_glob_path: 0.6
     ttl_dynamic: 40
-    ttl_static: 3
+    ttl_static: 5
     vs_reset: 0.1
     measure: false
     from_bag: false

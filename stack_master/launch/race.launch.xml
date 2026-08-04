@@ -24,6 +24,8 @@
   <arg name="virtual"    default="$(var sim)" description="Inject a virtual opponent + static obstacles (on by default in sim, off on the real car; e.g. virtual:=true to overlay a virtual opponent onto the real LiDAR)"/>
   <arg name="ot_planner" default="lane_change"
        description="Overtake planner to run and listen to: lane_change (lane_change_planner) or sqp (sqp_planner)"/>
+  <arg name="static_planner" default="spline"
+       description="Static-obstacle planner: spline (legacy single apex) or lattice (multi-obstacle d candidates)"/>
   <arg name="control_topic" default="/local_waypoints"
        description="WpntArray the controller follows: /local_waypoints (state-machine output w/ avoidance) or /global_waypoints (robust raceline)"/>
   <arg name="vis_lane_change" default="false"
@@ -90,10 +92,20 @@
   <!-- Start planner -> /planner/start_wpnts -->
   <node pkg="spliner" exec="start_spline_node_v2" name="start_planner" output="screen"/>
 
-  <!-- Static avoidance -> /planner/avoidance/static_otwpnts -->
-  <node pkg="spliner" exec="static_avoidance_node" name="static_avoidance_planner" output="screen">
-    <remap from="/planner/avoidance/otwpnts" to="/planner/avoidance/static_otwpnts"/>
-  </node>
+  <!-- Static avoidance -> /planner/avoidance/static_otwpnts.
+       Keep the legacy and lattice implementations side by side so launch-time
+       selection never requires replacing the proven node. -->
+  <group if="$(eval '\'$(var static_planner)\' == \'spline\'')">
+    <node pkg="spliner" exec="static_avoidance_node" name="static_avoidance_planner" output="screen">
+      <remap from="/planner/avoidance/otwpnts" to="/planner/avoidance/static_otwpnts"/>
+    </node>
+  </group>
+  <group if="$(eval '\'$(var static_planner)\' == \'lattice\'')">
+    <node pkg="spliner" exec="static_lattice_avoidance_node" name="static_lattice_avoidance_planner" output="screen">
+      <param from="$(find-pkg-share stack_master)/config/static_lattice_avoidance.yaml"/>
+      <remap from="/planner/avoidance/otwpnts" to="/planner/avoidance/static_otwpnts"/>
+    </node>
+  </group>
 
   <!-- Dynamic avoidance planner (selected by ot_planner) -> /planner/avoidance/otwpnts + /planner/avoidance/merger + /global_waypoints_updated -->
   <group if="$(eval '\'$(var ot_planner)\' == \'lane_change\'')">

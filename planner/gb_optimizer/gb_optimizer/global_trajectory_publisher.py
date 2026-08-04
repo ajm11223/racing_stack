@@ -4,7 +4,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Float32
 from f110_msgs.msg import WpntArray
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import Marker, MarkerArray
 
 # the `.` tells Python to look in the current directory at runtime
 from .readwrite_global_waypoints import read_global_waypoints
@@ -115,25 +115,49 @@ class GlobalRepublisher(Node):
     def lattice_cb(self, msg):
         self.graph_lattice = msg
 
+    @staticmethod
+    def _marker_array_with_reset(markers):
+        """Prepend DELETEALL so a shorter/new map cannot leave RViz ghosts."""
+        reset = Marker()
+        reset.action = Marker.DELETEALL
+        result = MarkerArray()
+        result.markers = [reset]
+        result.markers.extend(
+            marker
+            for marker in markers.markers
+            if marker.action != Marker.DELETEALL
+        )
+        return result
+
     def global_republisher(self):
 
         if self.glb_wpnts is not None and self.glb_markers is not None:
             self.glb_wpnts_pub.publish(self.glb_wpnts)
-            self.glb_markers_pub.publish(self.glb_markers)
+            self.glb_markers_pub.publish(
+                self._marker_array_with_reset(self.glb_markers)
+            )
         if self.glb_sp_wpnts is not None and self.glb_sp_markers is not None:
             self.glb_sp_wpnts_pub.publish(self.glb_sp_wpnts)
-            self.glb_sp_markers_pub.publish(self.glb_sp_markers)
+            self.glb_sp_markers_pub.publish(
+                self._marker_array_with_reset(self.glb_sp_markers)
+            )
         if self.centerline_wpnts is not None and self.centerline_markers is not None:
             self.centerline_wpnts_pub.publish(self.centerline_wpnts)
-            self.centerline_markers_pub.publish(self.centerline_markers)
+            self.centerline_markers_pub.publish(
+                self._marker_array_with_reset(self.centerline_markers)
+            )
         if self.track_bounds is not None:
-            self.vis_track_bnds.publish(self.track_bounds)
+            self.vis_track_bnds.publish(
+                self._marker_array_with_reset(self.track_bounds)
+            )
         if self.map_infos is not None:
             self.map_info_pub.publish(self.map_infos)
         if self.est_lap_time is not None:
             self.est_lap_time_pub.publish(self.est_lap_time)
         if self.graph_lattice is not None:
-            self.lattice_pub.publish(self.graph_lattice)
+            self.lattice_pub.publish(
+                self._marker_array_with_reset(self.graph_lattice)
+            )
 
 
 def main(args=None):

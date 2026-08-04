@@ -75,6 +75,13 @@ def OvertakingTransition(state_machine: "StateMachine") -> Tuple[StateType, Stat
         state_machine.overtaking_ttl_count += 1
         return StateType.OVERTAKE, StateType.OVERTAKE
     state_machine.overtaking_ttl_count = 0
+    # Preserve lateral continuity when a newly visible obstacle invalidates the
+    # active OT path.  TRAILING uses an exact snapshot of the last OT geometry as
+    # its recovery source instead of snapping immediately to GB/recovery.  Its
+    # closest blocker becomes the trailing/overtaking target, allowing the
+    # lattice planner to produce a safe replacement and re-enter OVERTAKE.
+    if state_machine._capture_overtake_path_for_trailing():
+        return StateType.TRAILING, StateType.RECOVERY
     close_to_raceline = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
     return GlobalTrackingTransition(state_machine, close_to_raceline)
 
@@ -93,21 +100,51 @@ def StartTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType
         state_machine.cur_start_wpnts.is_init = False
         return GlobalTrackingTransition(state_machine, close_to_raceline)
 
-
-def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType]:
-    """Transitions for being in `StateType.FTGONLY`"""
+def FTGOnlyTransition(state_machine):
     close_to_raceline = (
         state_machine._check_close_to_raceline(0.05)
         and state_machine._check_close_to_raceline_heading(20)
     )
 
-    # 관심 장애물이 하나라도 있으면 FTG 유지
-    if len(state_machine.cur_obstacles_in_interest) != 0:
-        return StateType.FTGONLY, StateType.FTGONLY
+    if len(state_machine.cur_obstacles_in_interest) == 0:
+        state_machine.ftg_counter = 0
+        return NonObstacleTransition(state_machine, close_to_raceline)
 
-    # 관심 장애물이 없을 때만 GB_TRACK 또는 RECOVERY로 전이
-    return NonObstacleTransition(state_machine, close_to_raceline)
-'''    
+    # FTG 중에도 충돌 검사를 수행해서 closest_target을 다시 만든다.
+    gb_free = state_machine._check_free_frenet(
+        state_machine.cur_gb_wpnts
+    )
+
+    recovery_available = state_machine._check_latest_wpnts(
+        state_machine.recovery_wpnts,
+        state_machine.cur_recovery_wpnts,
+    )
+    recovery_free = (
+        recovery_available
+        and state_machine._check_free_frenet(
+            state_machine.cur_recovery_wpnts
+        )
+    )
+
+    # 안전한 새 lattice 경로를 가장 먼저 채택
+    if (
+        state_machine._check_overtaking_mode()
+        or state_machine._check_static_overtaking_mode()
+    ):
+        state_machine.ftg_counter = 0
+        return StateType.OVERTAKE, StateType.OVERTAKE
+
+    if close_to_raceline and gb_free:
+        state_machine.ftg_counter = 0
+        return StateType.GB_TRACK, StateType.GB_TRACK
+
+    if recovery_free:
+        state_machine.ftg_counter = 0
+        return StateType.RECOVERY, StateType.RECOVERY
+
+    return StateType.FTGONLY, StateType.FTGONLY  
+
+'''
 def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType]:
     """Transitions for being in `StateType.FTGONLY`"""
     close_to_raceline = state_machine._check_close_to_raceline(0.05) * state_machine._check_close_to_raceline_heading(20)
@@ -174,6 +211,11 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
     if can_overtake:
         return StateType.OVERTAKE, StateType.OVERTAKE
     else:
+        if (
+            state_machine.cur_state == StateType.GB_TRACK
+            and not state_machine._check_gb_trailing_distance(7.0)
+        ):
+            return StateType.GB_TRACK, StateType.GB_TRACK
         if close_to_raceline:
             return StateType.TRAILING, StateType.GB_TRACK
         elif recovery_availability:

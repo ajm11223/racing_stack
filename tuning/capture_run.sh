@@ -34,6 +34,10 @@ echo "[capture] -> $OUT"
     echo "git_dirty:    $(git -C "$STACK" status --porcelain 2>/dev/null | wc -l) files"
 } > "$OUT"/meta/run_info.yaml
 git -C "$STACK" status --porcelain > "$OUT"/meta/git_dirty.txt 2>/dev/null
+# 파일 이름만으로는 미커밋 코드의 실제 동작을 복원할 수 없다. 특히 controller,
+# FTG, state-machine을 현장에서 고친 채 주행하는 경우를 위해 patch 자체도 보존.
+git -C "$STACK" diff --binary > "$OUT"/meta/git_worktree.patch 2>/dev/null
+git -C "$STACK" diff --cached --binary > "$OUT"/meta/git_index.patch 2>/dev/null
 
 # ── 2. 실행 중인 launch 명령 (map / use_map / lu_table / localization) ──
 ps -eo args= | grep '[r]os2 launch' > "$OUT"/meta/launch_cmdline.txt 2>/dev/null
@@ -48,7 +52,9 @@ ros2 topic list     > "$OUT"/meta/topic_list.txt 2>&1
 } >> "$OUT"/meta/run_info.yaml
 
 # ── 3. 살아있는 파라미터 (백에는 안 담김) ───────────────────────────────
-for N in /controller_manager /state_machine; do
+for N in /controller_manager /state_machine /simple_mux \
+         /speed_sector_tuner /ot_sector_tuner \
+         /vesc/vesc_driver_node /vesc/ackermann_to_vesc_node; do
     ros2 param dump "$N" > "$OUT"/meta/params$(echo "$N" | tr / _).yaml 2>&1 || true
 done
 
@@ -84,6 +90,34 @@ done
 # 레이스라인이 시뮬과 같은 파일인지 나중에 대조할 수 있게 해시
 md5sum "$OUT"/meta/global_waypoints.json 2>/dev/null >> "$OUT"/meta/run_info.yaml
 
+# controller_map.yaml에는 lookup 이름만 있다. 소스 CSV가 아니라 ROS가 실제로
+# 찾는 install/share의 파일을 복사해야 "빌드는 옛 표, source는 새 표"인 상태도
+# 사후에 검출할 수 있다.
+LU_TABLE=$(
+    ros2 param get /controller_manager LU_table 2>/dev/null |
+        sed -n 's/^String value is:[[:space:]]*//p' |
+        head -1
+)
+echo "lu_table:     ${LU_TABLE:-unknown}" >> "$OUT"/meta/run_info.yaml
+if [ -n "${LU_TABLE:-}" ]; then
+    LU_PREFIX=$(ros2 pkg prefix steering_lookup 2>/dev/null || true)
+    if [ -n "${LU_PREFIX:-}" ]; then
+        LU_DIR="$LU_PREFIX/share/steering_lookup/cfg"
+        LU_FILE="$LU_DIR/${LU_TABLE}_pacejka_lookup_table.csv"
+        [ -f "$LU_FILE" ] || LU_FILE="$LU_DIR/${LU_TABLE}_lookup_table.csv"
+        if [ -f "$LU_FILE" ]; then
+            cp "$LU_FILE" "$OUT"/meta/
+            sha256sum "$LU_FILE" >> "$OUT"/meta/run_info.yaml
+        else
+            echo "lookup_file:  NOT_FOUND under $LU_DIR" >> "$OUT"/meta/run_info.yaml
+            echo "[capture] 경고: 실행 중 lookup 파일을 찾지 못했습니다: $LU_TABLE"
+        fi
+    else
+        echo "lookup_file:  steering_lookup package NOT_FOUND" >> "$OUT"/meta/run_info.yaml
+        echo "[capture] 경고: steering_lookup package prefix를 찾지 못했습니다."
+    fi
+fi
+
 # ── 5. 사람이 적는 메모 (자동으로는 알 수 없는 것) ──────────────────────
 cat > "$OUT"/meta/NOTES.md <<'EOF'
 # 주행 메모 (직접 채워주세요)
@@ -101,11 +135,31 @@ echo "[capture] 메타 저장 완료. 녹화 시작 — 끝내려면 Ctrl-C"
 ros2 bag record -o "$OUT"/bag \
   /scan /scan_raw /pf/viz/inferred_pose /map \
   /car_state/odom /car_state/odom_frenet \
-  /local_waypoints /global_waypoints /behavior_strategy /state_machine \
+  /tracked_pose /tracked_pose/odom /pf/pose/odom \
+  /local_waypoints /global_waypoints /global_waypoints_scaled /global_waypoints_updated \
+  /behavior_strategy /state_machine /state_machine/debug \
   /vesc/high_level/ackermann_cmd /vesc/ackermann_cmd \
-  /vesc/commands/servo/position /vesc/sensors/imu /vesc/sensors/core /vesc/odom \
+  /vesc/commands/servo/position /vesc/sensors/servo_position_command \
+  /vesc/commands/motor/speed /vesc/commands/motor/current \
+  /vesc/commands/motor/brake /vesc/commands/motor/duty_cycle \
+  /vesc/sensors/imu /vesc/sensors/core /vesc/odom \
+  /vesc/debug/filtered_accel /vesc/debug/adaptive_gain \
   /imu/data /l1_distance /lookahead_point \
-  /controller/latency /controller/debug /state_machine/latency /tf /tf_static
+  /controller/latency /controller/debug /state_machine/latency \
+  /detect/latency /tracking/latency \
+  /planner/avoidance/latency /planner/pspliner_sqp/latency \
+  /detect/raw_obstacles /tracking/obstacles \
+  /planner/avoidance/otwpnts /planner/avoidance/static_otwpnts \
+  /planner/avoidance/fail_trailing /planner/ot_blended_recovery/wpnts \
+  /planner/avoidance/considered_OBS /planner/avoidance/propagated_obs \
+  /planner/avoidance/lattice_candidates \
+  /planner/recovery/wpnts \
+  /best_points/marker /best_gap/markers \
+  /joy /joy_keyboard /ego/use_keyboard \
+  /lap_analyser/start /lap_data /min_car_distance_to_boundary \
+  /pitwall/lap/count /pitwall/lap/time \
+  /pitwall/lap/avg_lateral_error /pitwall/lap/max_lateral_error /pitwall/events \
+  /parameter_events /diagnostics /rosout /tf /tf_static
 
 echo
 echo "[capture] 완료 -> $OUT"
