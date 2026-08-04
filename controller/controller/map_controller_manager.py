@@ -45,6 +45,7 @@ L1_PARAMS = [
     'heading_error_thres', 'steer_gain_for_speed', 'future_constant', 'AEB_thres',
     'speed_diff_thres', 'start_speed', 'start_curvature_factor',
     'l1_chord_err', 'lat_err_steer_coeff',   # v3 lateral refinements
+    'map_speed_blend',                       # MAP lookup speed source
 ]
 
 # FTG params live-tunable via rqt (controller.yaml). Mapped onto the FTG instance
@@ -267,6 +268,7 @@ class ControllerManager(Node):
             use_map=self.use_map,
             l1_chord_err=self.l1_chord_err,
             lat_err_steer_coeff=self.lat_err_steer_coeff,
+            map_speed_blend=self.map_speed_blend,
             predict_pub=self.predict_pub,
             logger_info=self.get_logger().info,
             logger_warn=self.get_logger().warning,

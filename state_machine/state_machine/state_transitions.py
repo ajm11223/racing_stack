@@ -213,7 +213,7 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
     else:
         if (
             state_machine.cur_state == StateType.GB_TRACK
-            and not state_machine._check_gb_trailing_distance(7.0)
+            and not state_machine._check_gb_trailing_distance(10.0)
         ):
             return StateType.GB_TRACK, StateType.GB_TRACK
         if close_to_raceline:

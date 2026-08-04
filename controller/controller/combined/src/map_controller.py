@@ -68,6 +68,7 @@ class Controller:
 
                 l1_chord_err=1.0,          # v3 chord-error cap [m]; >=1.0 ~ off
                 lat_err_steer_coeff=0.6931,  # v3; ln2 = legacy exp(ln2*d)
+                map_speed_blend=0.0,       # MAP lookup speed: 0 = reference, 1 = actual
 
                 predict_pub=None,
                 logger_info=logging.info,
@@ -123,6 +124,7 @@ class Controller:
         # v3 lateral-control refinements (defaults reproduce legacy behaviour)
         self.l1_chord_err = l1_chord_err
         self.lat_err_steer_coeff = lat_err_steer_coeff
+        self.map_speed_blend = map_speed_blend
 
         # Parameters in the controller
         self.curr_steering_angle = 0
@@ -357,11 +359,16 @@ class Controller:
             # L1 geometry, inverted through the measured steering lookup table
             # so tire slip is compensated at the source. Uses speed_for_lu
             # (lookahead + lat-err adjusted speed), matching the ROS1 original.
-            lat_acc = 2 * speed_for_lu**2 * np.sin(eta) / L1_distance
+            # speed_for_lu is the *reference* waypoint speed, so on a straight the
+            # car is still accelerating towards it and lat_acc (~v^2) is inflated,
+            # amplifying small eta into steering oscillation. Blend towards the
+            # actual speed; 0.0 keeps the legacy behaviour exactly.
+            v_lu = speed_for_lu + self.map_speed_blend * (self.speed_now - speed_for_lu)
+            lat_acc = 2 * v_lu**2 * np.sin(eta) / L1_distance
             self.dbg["lat_acc"] = float(lat_acc)
-            if np.isfinite(lat_acc) and np.isfinite(speed_for_lu):
+            if np.isfinite(lat_acc) and np.isfinite(v_lu):
                 try:
-                    map_steer = float(self.steer_lookup.lookup_steer_angle(lat_acc, speed_for_lu))
+                    map_steer = float(self.steer_lookup.lookup_steer_angle(lat_acc, v_lu))
                 except Exception as e:
                     map_steer = np.nan
                     self.logger_warn(f"[Controller] MAP lookup failed ({e}); using PP fallback")

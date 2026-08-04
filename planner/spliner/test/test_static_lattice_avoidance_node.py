@@ -15,12 +15,11 @@ def make_planner():
     planner = StaticLatticeAvoidancePlanner.__new__(
         StaticLatticeAvoidancePlanner
     )
-    planner.lattice_d_resolution_three_samples = 0.20
-    planner.lattice_d_resolution = 0.30
+    planner.lattice_d_resolution = 0.20
     planner.lattice_track_boundary_margin = 0.25
     planner.lattice_obstacle_boundary_margin = 0.35
     planner.lattice_max_samples_per_side = 5
-    planner.lattice_min_free_width = 0.40
+    planner.lattice_min_free_width = 0.50
     planner.lattice_max_obstacles = 3
     planner.lattice_obstacle_horizon = 10.0
     planner.lattice_longitudinal_margin = 0.30
@@ -99,8 +98,8 @@ def make_global_waypoints(count=1001):
 @pytest.mark.parametrize(
     ("width", "expected_count"),
     [
-        (0.39, 0),
-        (0.40, 1),
+        (0.49, 0),
+        (0.50, 1),
         (0.99, 1),
         (1.00, 3),
         (1.99, 3),
@@ -108,7 +107,7 @@ def make_global_waypoints(count=1001):
         (3.00, 5),
     ],
 )
-def test_raw_interval_width_selects_zero_one_three_or_five_samples(
+def test_free_interval_width_selects_zero_one_three_or_five_samples(
     width,
     expected_count,
 ):
@@ -121,35 +120,31 @@ def test_raw_interval_width_selects_zero_one_three_or_five_samples(
 
 
 @pytest.mark.parametrize(
-    ("width", "expected"),
-    [
-        (0.70, [0.35]),
-        (1.20, [0.40, 0.60, 0.80]),
-        (2.40, [0.60, 0.90, 1.20, 1.50, 1.80]),
-    ],
+    "width",
+    [0.70, 1.20, 2.40],
 )
-def test_interval_samples_use_count_specific_midpoint_centred_spacing(
-    width,
-    expected,
-):
+def test_interval_samples_keep_fixed_lateral_spacing(width):
     planner = make_planner()
 
     samples = planner._sample_free_interval(0.0, width)
 
-    assert samples == pytest.approx(expected)
+    assert np.diff(samples) == pytest.approx(
+        np.full(len(samples) - 1, planner.lattice_d_resolution)
+    )
     assert np.mean(samples) == pytest.approx(width / 2.0)
 
 
-def test_candidate_sampling_uses_raw_boundaries_without_hard_filter_margins():
+def test_candidate_sampling_uses_independent_boundary_margins():
     planner = make_planner()
     obstacle = make_obstacle(1, 5.0, d=0.0)
+    planner.lattice_min_free_width = 0.05
     gb_wpnt = SimpleNamespace(d_right=1.0, d_left=1.0)
 
     candidates = planner._candidates_for_obstacle(obstacle, gb_wpnt)
 
     assert [candidate.d for candidate in candidates] == pytest.approx([
-        -0.55,
-        0.55,
+        -0.60,
+        0.60,
     ])
 
 
@@ -318,12 +313,15 @@ def test_same_s_obstacles_create_one_layer_from_combined_free_space():
 
     assert len(layers) == 1
     assert layers[0]
-    raw_bounds = [
-        planner._obstacle_lateral_bounds(obstacle)
-        for obstacle in (first, second)
-    ]
+    inflated_bounds = []
+    for obstacle in (first, second):
+        lo, hi = planner._obstacle_lateral_bounds(obstacle)
+        inflated_bounds.append((
+            lo - planner.lattice_obstacle_boundary_margin,
+            hi + planner.lattice_obstacle_boundary_margin,
+        ))
     assert all(
-        not any(lo <= candidate.d <= hi for lo, hi in raw_bounds)
+        not any(lo <= candidate.d <= hi for lo, hi in inflated_bounds)
         for candidate in layers[0]
     )
     assert {candidate.s for candidate in layers[0]} == {5.0}

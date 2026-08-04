@@ -13,6 +13,7 @@ controller_manager:
     l1_chord_err: 0.54
     lat_err_coeff: 0.6514421679504678
     lat_err_steer_coeff: 0.20020682486705238
+    map_speed_blend: 0.5
     m_l1: 0.35977681674957773
     q_l1: -0.2806817705404557
     speed_factor_for_curvature: 1.0144522940530891
@@ -23,7 +24,7 @@ controller_manager:
     t_clip_max: 4.2255550140360425
     t_clip_min: 1.7
     use_chord_cap: true
-    trailing_gap: 2.5
+    trailing_gap: 1.5
     trailing_vel_gain: 0.25
     trailing_p_gain: 1.35
     trailing_i_gain: 0.0

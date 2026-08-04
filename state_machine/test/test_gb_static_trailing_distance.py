@@ -21,7 +21,7 @@ def make_state_machine(*obstacles):
     )
 
 
-def check_distance(state_machine, threshold=7.0):
+def check_distance(state_machine, threshold=10.0):
     return StateMachine._check_gb_trailing_distance(
         state_machine,
         threshold,
@@ -41,34 +41,34 @@ def run_gb_obstacle_transition(obstacle):
     return ObstacleTransition(state_machine, close_to_raceline=True)
 
 
-def test_nearest_static_obstacle_beyond_seven_metres_blocks_trailing():
+def test_nearest_static_obstacle_beyond_ten_metres_blocks_trailing():
     state_machine = make_state_machine(
-        make_obstacle(7.01, is_static=True),
+        make_obstacle(10.01, is_static=True),
     )
 
     assert check_distance(state_machine) is False
 
 
-def test_nearest_static_obstacle_at_seven_metres_allows_trailing():
+def test_nearest_static_obstacle_at_ten_metres_allows_trailing():
     state_machine = make_state_machine(
-        make_obstacle(7.0, is_static=True),
+        make_obstacle(10.0, is_static=True),
     )
 
     assert check_distance(state_machine) is True
 
 
-def test_gb_stays_gb_for_static_obstacle_beyond_seven_metres():
+def test_gb_stays_gb_for_static_obstacle_beyond_ten_metres():
     state, source = run_gb_obstacle_transition(
-        make_obstacle(7.01, is_static=True),
+        make_obstacle(10.01, is_static=True),
     )
 
     assert state == StateType.GB_TRACK
     assert source == StateType.GB_TRACK
 
 
-def test_gb_enters_trailing_for_static_obstacle_at_seven_metres():
+def test_gb_enters_trailing_for_static_obstacle_at_ten_metres():
     state, source = run_gb_obstacle_transition(
-        make_obstacle(7.0, is_static=True),
+        make_obstacle(10.0, is_static=True),
     )
 
     assert state == StateType.TRAILING

@@ -4,8 +4,8 @@ lateral_width_m: 0.1
 free_scaling_reference_distance_m: 2.0
 # Static lattice hard-clearance values. These are final distances from the
 # vehicle centre to the original boundary; do not add half the car width again.
-track_boundary_margin_m: 0.2
-obstacle_boundary_margin_m: 0.2
+track_boundary_margin_m: 0.25
+obstacle_boundary_margin_m: 0.30
 longitudinal_margin_m: 0.20
 latest_threshold: 0.1
 hyst_timer_sec: 4.0

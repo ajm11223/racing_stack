@@ -12,8 +12,8 @@ static_lattice_avoidance_planner:
     # 아래 값은 모두 차량 중심에서 원본 경계까지 확보할 최종 거리이다.
     # 차량 폭과 별도 여유를 내부에서 추가하지 않고 이 상수를 그대로 쓴다.
     # ========================================================================
-    lattice_track_boundary_margin: 0.25   # 차량 중심~트랙 경계 거리 [m]
-    lattice_obstacle_boundary_margin: 0.30 # 차량 중심~장애물 경계 거리 [m]
+    lattice_track_boundary_margin: 0.24   # 차량 중심~트랙 경계 거리 [m]
+    lattice_obstacle_boundary_margin: 0.25 # 차량 중심~장애물 경계 거리 [m]
     kernel_size: 5              # occupancy map 경계 erosion 크기; 클수록 보수적
 
     # ========================================================================
@@ -22,11 +22,9 @@ static_lattice_avoidance_planner:
     lattice_obstacle_horizon: 10.0   # 차량 전방에서 고려할 정적 장애물 거리 [m]
                                      # 3번째 장애물이 범위 밖이면 12~15 m 검토
     lattice_max_obstacles: 3         # 한 번에 처리할 최대 장애물 수; 구현상 최대 3
-    lattice_d_resolution_three_samples: 0.20 # 3개 후보의 중앙 기준 횡간격 [m]
-    lattice_d_resolution: 0.30       # 5개 후보의 중앙 기준 횡간격 [m]
-    lattice_max_samples_per_side: 5  # 폭 규칙상 자유구간당 최대 후보 수
-    lattice_min_free_width: 0.50     # 0.4m 미만 원본 자유공간에는 후보를 만들지 않음
-                                     # 0.4~1.0m: 1개, 1.0~2.0m: 3개, 2.0m 이상: 5개
+    lattice_d_resolution: 0.20       # 같은 자유구간 내 기준점 횡간격 [m]
+    lattice_max_samples_per_side: 5  # 자유구간당 최대 기준점 수
+    lattice_min_free_width: 0.50     # margin 적용 후 0.5m 미만이면 샘플링하지 않음
     lattice_longitudinal_margin: 0.40 # 충돌 검사 시 장애물 앞뒤 추가 여유 [m]
 
     # ========================================================================

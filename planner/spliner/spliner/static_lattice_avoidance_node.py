@@ -19,7 +19,7 @@ import numpy as np
 import rclpy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.parameter import Parameter
-from scipy.interpolate import BPoly
+from scipy.interpolate import CubicHermiteSpline
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -86,11 +86,10 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         self.obstacles_in_interest: List[Obstacle] = []
         self.tracked_static_obstacles: List[Obstacle] = []
         self.behavior_state = ""
-        self.lattice_d_resolution_three_samples = 0.20
         self.lattice_d_resolution = 0.30
         self.lattice_track_boundary_margin = 0.225
         self.lattice_obstacle_boundary_margin = 0.30
-        self.lattice_max_samples_per_side = 3
+        self.lattice_max_samples_per_side = 5
         self.lattice_min_free_width = 0.40
         self.lattice_max_obstacles = 3
         self.lattice_obstacle_horizon = 10.0
@@ -115,12 +114,6 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         super().__init__()
 
         self.name = "static_lattice_avoidance_planner"
-        self.lattice_d_resolution_three_samples = max(
-            float(self.get_parameter(
-                "lattice_d_resolution_three_samples"
-            ).value),
-            1.0e-3,
-        )
         self.lattice_d_resolution = max(
             float(self.get_parameter("lattice_d_resolution").value),
             1.0e-3,
@@ -200,14 +193,10 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
     def declare_all_parameters(self):
         """Declare legacy spline parameters plus lattice sampling parameters."""
         super().declare_all_parameters()
-        self.declare_parameter(
-            "lattice_d_resolution_three_samples",
-            0.20,
-        )
         self.declare_parameter("lattice_d_resolution", 0.30)
         self.declare_parameter("lattice_track_boundary_margin", 0.225)
         self.declare_parameter("lattice_obstacle_boundary_margin", 0.30)
-        self.declare_parameter("lattice_max_samples_per_side", 3)
+        self.declare_parameter("lattice_max_samples_per_side", 5)
         self.declare_parameter("lattice_min_free_width", 0.40)
         self.declare_parameter("lattice_max_obstacles", 3)
         self.declare_parameter("lattice_obstacle_horizon", 10.0)
@@ -223,12 +212,7 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
     def dyn_param_cb(self, params: List[Parameter]) -> SetParametersResult:
         """Apply lattice sampling updates and preserve legacy parameter handling."""
         for param in params:
-            if param.name == "lattice_d_resolution_three_samples":
-                self.lattice_d_resolution_three_samples = max(
-                    float(param.value),
-                    1.0e-3,
-                )
-            elif param.name == "lattice_d_resolution":
+            if param.name == "lattice_d_resolution":
                 self.lattice_d_resolution = max(float(param.value), 1.0e-3)
             elif param.name == "lattice_track_boundary_margin":
                 self.lattice_track_boundary_margin = max(
@@ -474,7 +458,7 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
 
         # Obstacles whose inflated longitudinal collision intervals overlap
         # cannot become separate spline control points: equal (or nearly equal)
-        # s values violate the strictly increasing lattice control stations.
+        # s values violate the strictly increasing CubicHermiteSpline domain.
         # Include those peers immediately so candidate generation can subtract
         # all of their lateral occupied intervals in one cross-section layer.
         initial_keys = {
@@ -585,7 +569,7 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         gb_wpnts,
         wpnt_dist: float,
     ) -> List[LatticeApexCandidate]:
-        """Sample raw connected free corridors in one longitudinal layer."""
+        """Sample the complement of every inflated obstacle in one s layer."""
         if not obstacles:
             return []
 
@@ -599,8 +583,11 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
             (self.cur_s + float(np.mean(forward_distances))) % self.gb_max_s
         )
 
-        # Intersect raw track bounds across every member because track width can
-        # change across one longitudinal layer.
+        # Track bounds are intersected across all members, making the vehicle
+        # center interval conservative when track width changes through a group.
+        # Candidate-space construction intentionally uses the raw track and
+        # obstacle boundaries; hard-safety margins are checked on the completed
+        # spline later.
         track_mins = []
         track_maxs = []
         for obstacle in obstacles:
@@ -661,7 +648,7 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         obs: Obstacle,
         gb_wp,
     ) -> List[LatticeApexCandidate]:
-        """Sample raw obstacle-to-track corridors; hard filters keep margins."""
+        """Subtract the raw obstacle interval from the raw track interval."""
         track_min = -float(gb_wp.d_right)
         track_max = float(gb_wp.d_left)
         if not (math.isfinite(track_min) and math.isfinite(track_max)):
@@ -669,10 +656,13 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         if track_max <= track_min:
             return []
 
-        obs_min, obs_max = self._obstacle_lateral_bounds(obs)
+        raw_obs_min, raw_obs_max = self._obstacle_lateral_bounds(obs)
+        obs_min = raw_obs_min
+        obs_max = raw_obs_max
 
-        # Candidate positions are vehicle-centre positions in the raw corridor.
-        # The later collision/track hard filters still apply configured margins.
+        # Candidate positions are vehicle-center positions. Clamp each free
+        # interval to the raw track interval; final paths still go through the
+        # existing obstacle- and track-clearance checks.
         right_lo = track_min
         right_hi = min(obs_min, track_max)
         left_lo = max(obs_max, track_min)
@@ -714,33 +704,25 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         )
 
     def _sample_free_interval(self, d_min: float, d_max: float) -> List[float]:
-        """Place 0/1/3/5 midpoint-centred samples from the raw corridor width."""
+        """Place 1/3/5 centered samples according to the raw free-space width."""
         width = float(d_max - d_min)
-        if (
-            not math.isfinite(width)
-            or width + 1.0e-9 < self.lattice_min_free_width
-        ):
+        if not math.isfinite(width) or width < self.lattice_min_free_width:
             return []
 
-        if width < 1.0 - 1.0e-9:
+        if width < 1.0:
             count = 1
-        elif width < 2.0 - 1.0e-9:
+        elif width < 2.0:
             count = 3
         else:
             count = 5
+        count = min(self.lattice_max_samples_per_side, count)
 
+        # Center the sample group in the free interval. Adjacent candidates
+        # stay 0.30 m apart (the configured lattice_d_resolution).
         center = (float(d_min) + float(d_max)) / 2.0
-        half_count = count // 2
-        resolution = (
-            self.lattice_d_resolution_three_samples
-            if count == 3
-            else self.lattice_d_resolution
-        )
+        start = center - (count - 1) * self.lattice_d_resolution / 2.0
         return [
-            float(
-                center
-                + (index - half_count) * resolution
-            )
+            float(start + index * self.lattice_d_resolution)
             for index in range(count)
         ]
 
@@ -759,12 +741,13 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         constraint_obstacles: Sequence[Obstacle],
         gb_wpnts,
     ) -> LatticeExpansionResult:
-        """Promote a constraint obstacle only when every current path collides.
+        """Promote a constraint obstacle when it blocks any current path.
 
-        A collision affecting only some paths rejects those paths.  If at least
-        one collision-free path remains, no new apex layer is introduced.  When
-        all paths are blocked, the unavoidable/most frequent nearest collider is
-        promoted and the lattice is regenerated, up to three planning obstacles.
+        Every collider that rejects at least one candidate receives its own apex
+        layer in the same expansion step.  Thus obstacles 2 and 3 are evaluated
+        independently against the paths made for obstacle 1, then promoted
+        together before the lattice is regenerated.  Promotion remains capped by
+        the configured three planning obstacles.
         """
         planning = self._deduplicate_obstacles(initial_obstacles)
         planning.sort(
@@ -788,8 +771,9 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                 if path is None:
                     continue
                 generated_paths.append(path)
+                collision_path = self._path_with_output_tail(path, gb_wpnts)
                 collisions = self._find_path_collisions(
-                    path,
+                    collision_path,
                     constraint_obstacles,
                 )
                 if not collisions:
@@ -805,28 +789,31 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                     if key not in planning_keys:
                         collision_counts[key] = collision_counts.get(key, 0) + 1
 
-            if collision_free:
-                break
             if len(planning) >= self.lattice_max_obstacles:
                 break
             if not generated_paths or not collision_counts:
                 break
 
-            promoted = self._select_obstacle_to_promote(
+            promoted_obstacles = self._obstacles_to_promote(
                 collision_counts,
                 constraint_obstacles,
                 planning,
-                len(generated_paths),
             )
-            if promoted is None:
+            if not promoted_obstacles:
                 break
 
-            planning.append(copy.deepcopy(promoted))
+            planning.extend(
+                copy.deepcopy(obstacle)
+                for obstacle in promoted_obstacles
+            )
             planning = self._deduplicate_obstacles(planning)
             planning.sort(
                 key=lambda obs: (obs.s_center - self.cur_s) % self.gb_max_s
             )
-            promoted_ids.append(int(promoted.id))
+            promoted_ids.extend(
+                int(obstacle.id)
+                for obstacle in promoted_obstacles
+            )
 
         return LatticeExpansionResult(
             planning_obstacles=planning,
@@ -842,22 +829,10 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         apexes: Tuple[LatticeApexCandidate, ...],
         gb_wpnts,
     ):
-        """Build a Cartesian Hermite path through one apex combination.
-
-        Match the legacy static spliner at the vehicle end: seed the spline at
-        the measured Cartesian pose and constrain its first tangent to the
-        vehicle heading. The remaining control-point tangents follow the
-        global trajectory heading.
-        """
+        """Build a monotonic Frenet d(s) path through one apex combination."""
         if not apexes or len(gb_wpnts) < 2:
             return None
         if self.cur_s is None or self.cur_d is None:
-            return None
-        vehicle_pose = np.asarray(
-            [self.cur_x, self.cur_y, self.cur_yaw],
-            dtype=float,
-        )
-        if not np.isfinite(vehicle_pose).all():
             return None
 
         wpnt_dist = float(gb_wpnts[1].s_m - gb_wpnts[0].s_m)
@@ -894,67 +869,33 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
 
         control_s_array = np.asarray(control_s, dtype=float)
         control_d_array = np.asarray(control_d, dtype=float)
-
-        converted = np.asarray(
-            self.converter.get_cartesian(
-                control_s_array[1:] % self.gb_max_s,
-                control_d_array[1:],
-            ),
-            dtype=float,
+        derivatives = np.zeros_like(control_d_array)
+        lateral_spline = CubicHermiteSpline(
+            control_s_array,
+            control_d_array,
+            derivatives,
         )
-        if converted.shape != (2, len(control_s_array) - 1):
-            return None
-        control_xy = np.vstack((vehicle_pose[:2], converted.T))
-
-        control_indices = (
-            np.round((control_s_array[1:] % self.gb_max_s) / wpnt_dist)
-            .astype(int)
-            % len(gb_wpnts)
-        )
-        tangents = [[math.cos(self.cur_yaw), math.sin(self.cur_yaw)]]
-        tangents.extend(
-            [
-                math.cos(float(gb_wpnts[index].psi_rad)),
-                math.sin(float(gb_wpnts[index].psi_rad)),
-            ]
-            for index in control_indices
-        )
-        tangents = np.asarray(tangents, dtype=float) * float(self.spline_scale)
-
-        chord_lengths = np.linalg.norm(np.diff(control_xy, axis=0), axis=1)
-        spline_parameter = np.concatenate(([0.0], np.cumsum(chord_lengths)))
-        spline_length = float(spline_parameter[-1])
-        if (
-            not np.isfinite(control_xy).all()
-            or not np.isfinite(tangents).all()
-            or not np.isfinite(spline_length)
-            or spline_length <= 0.0
-            or spline_length > self.gb_max_s
-            or np.any(chord_lengths <= 1.0e-6)
-        ):
-            return None
 
         sample_count = max(
             2,
-            int(math.ceil(spline_length / wpnt_dist)) + 1,
+            int(math.ceil(
+                (control_s_array[-1] - control_s_array[0]) / wpnt_dist
+            )) + 1,
         )
-        sample_parameter = np.linspace(0.0, spline_length, sample_count)
-        xy = np.empty((sample_count, 2), dtype=float)
-        for dimension in range(2):
-            derivatives = [
-                [control_xy[index, dimension], tangents[index, dimension]]
-                for index in range(len(control_xy))
-            ]
-            xy[:, dimension] = BPoly.from_derivatives(
-                spline_parameter,
-                derivatives,
-            )(sample_parameter)
-
-        sample_s, sample_d = self.converter.get_frenet(xy[:, 0], xy[:, 1])
-        sample_s = np.asarray(sample_s, dtype=float) % self.gb_max_s
-        sample_d = np.asarray(sample_d, dtype=float)
-        if sample_s.shape != (sample_count,) or sample_d.shape != (sample_count,):
+        sample_s_unwrapped = np.linspace(
+            control_s_array[0],
+            control_s_array[-1],
+            sample_count,
+        )
+        sample_s = sample_s_unwrapped % self.gb_max_s
+        sample_d = np.asarray(lateral_spline(sample_s_unwrapped), dtype=float)
+        cartesian = np.asarray(
+            self.converter.get_cartesian(sample_s, sample_d),
+            dtype=float,
+        )
+        if cartesian.shape != (2, sample_count):
             return None
+        xy = cartesian.T
         if not (
             np.isfinite(sample_s).all()
             and np.isfinite(sample_d).all()
@@ -967,6 +908,71 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
             s=sample_s,
             d=sample_d,
             xy=xy,
+        )
+
+    def _path_with_output_tail(
+        self,
+        path: LatticePathCandidate,
+        gb_wpnts,
+    ) -> LatticePathCandidate:
+        """Append the same GB tail published by ``_selected_path_output``.
+
+        Candidate splines end shortly after their final apex, while the
+        controller output continues for another 100 global waypoints.  Collision
+        checks must cover that continuation or a downstream obstacle can be
+        absent from every collision count and never receive an apex layer.
+
+        Test doubles and malformed inputs are returned unchanged so expansion
+        can still reject them through its existing checks.
+        """
+        if (
+            len(gb_wpnts) < 2
+            or not hasattr(path, "s")
+            or not hasattr(path, "d")
+            or not hasattr(path, "xy")
+        ):
+            return path
+
+        path_s = np.asarray(path.s, dtype=float)
+        path_d = np.asarray(path.d, dtype=float)
+        path_xy = np.asarray(path.xy, dtype=float)
+        if (
+            path_s.size == 0
+            or path_d.shape != path_s.shape
+            or path_xy.shape != (path_s.size, 2)
+        ):
+            return path
+
+        wpnt_dist = float(gb_wpnts[1].s_m - gb_wpnts[0].s_m)
+        if not math.isfinite(wpnt_dist) or wpnt_dist <= 0.0:
+            return path
+
+        tail_start = int(round(float(path_s[-1]) / wpnt_dist)) % len(gb_wpnts)
+        tail = [
+            gb_wpnts[(tail_start + offset) % len(gb_wpnts)]
+            for offset in range(1, min(101, len(gb_wpnts)))
+        ]
+        if not tail:
+            return path
+
+        tail_s = np.asarray([wpnt.s_m for wpnt in tail], dtype=float)
+        tail_d = np.asarray([wpnt.d_m for wpnt in tail], dtype=float)
+        tail_xy = np.asarray(
+            [(wpnt.x_m, wpnt.y_m) for wpnt in tail],
+            dtype=float,
+        )
+        if not (
+            np.isfinite(tail_s).all()
+            and np.isfinite(tail_d).all()
+            and np.isfinite(tail_xy).all()
+        ):
+            return path
+
+        return LatticePathCandidate(
+            apexes=path.apexes,
+            s=np.concatenate((path_s, tail_s)),
+            d=np.concatenate((path_d, tail_d)),
+            xy=np.vstack((path_xy, tail_xy)),
         )
 
     def _find_path_collisions(
@@ -994,10 +1000,7 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                 + self.gb_max_s / 2.0
             ) % self.gb_max_s - self.gb_max_s / 2.0
             longitudinal_overlap = np.abs(delta_s) <= half_s
-            lateral_overlap = (
-                (path.d >= obs_min - 1.0e-9)
-                & (path.d <= obs_max + 1.0e-9)
-            )
+            lateral_overlap = (path.d >= obs_min) & (path.d <= obs_max)
             if np.any(longitudinal_overlap & lateral_overlap):
                 key = self._obstacle_key(obstacle)
                 if key not in seen:
@@ -1016,14 +1019,13 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                 half_extent = max(half_extent, span / 2.0)
         return half_extent
 
-    def _select_obstacle_to_promote(
+    def _obstacles_to_promote(
         self,
         collision_counts,
         constraint_obstacles: Sequence[Obstacle],
         planning_obstacles: Sequence[Obstacle],
-        generated_paths: int,
-    ):
-        """Choose an unavoidable collider, otherwise the most frequent nearest one."""
+    ) -> List[Obstacle]:
+        """Return every new obstacle that blocks at least one candidate path."""
         planning_keys = {
             self._obstacle_key(obs)
             for obs in planning_obstacles
@@ -1034,27 +1036,14 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
             if self._obstacle_key(obs) not in planning_keys
             and self._obstacle_key(obs) in collision_counts
         ]
-        if not promotable:
-            return None
-
-        unavoidable = [
-            obs
-            for obs in promotable
-            if collision_counts[self._obstacle_key(obs)] >= generated_paths
-        ]
-        if unavoidable:
-            return min(
-                unavoidable,
-                key=lambda obs: (obs.s_center - self.cur_s) % self.gb_max_s,
-            )
-
-        return min(
-            promotable,
-            key=lambda obs: (
-                -collision_counts[self._obstacle_key(obs)],
-                (obs.s_center - self.cur_s) % self.gb_max_s,
-            ),
+        promotable.sort(
+            key=lambda obs: (obs.s_center - self.cur_s) % self.gb_max_s
         )
+        available_slots = max(
+            0,
+            self.lattice_max_obstacles - len(planning_obstacles),
+        )
+        return promotable[:available_slots]
 
     def _select_best_path(
         self,
@@ -1079,7 +1068,8 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         worst_clearance = None
         scored = []
         for path in paths:
-            if self._find_path_collisions(path, obstacles):
+            collision_path = self._path_with_output_tail(path, gb_wpnts)
+            if self._find_path_collisions(collision_path, obstacles):
                 rejections["collision"] += 1
                 continue
             if hasattr(self, "map_filter") and any(
@@ -1105,14 +1095,11 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                 continue
 
             minimum_clearance = self._minimum_path_clearance(
-                path,
+                collision_path,
                 obstacles,
                 gb_wpnts,
             )
-            if (
-                not math.isfinite(minimum_clearance)
-                or minimum_clearance <= 1.0e-9
-            ):
+            if not math.isfinite(minimum_clearance) or minimum_clearance <= 0.0:
                 rejections["clearance"] += 1
                 if math.isfinite(minimum_clearance):
                     worst_clearance = (
