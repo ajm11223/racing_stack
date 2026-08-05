@@ -711,18 +711,21 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
 
         if width < 1.0:
             count = 1
+            spacing = self.lattice_d_resolution
         elif width < 2.0:
             count = 3
+            spacing = 0.20
         else:
             count = 5
+            spacing = 0.30
         count = min(self.lattice_max_samples_per_side, count)
 
         # Center the sample group in the free interval. Adjacent candidates
-        # stay 0.30 m apart (the configured lattice_d_resolution).
+        # stay 0.20 m apart for three samples and 0.30 m apart for five.
         center = (float(d_min) + float(d_max)) / 2.0
-        start = center - (count - 1) * self.lattice_d_resolution / 2.0
+        start = center - (count - 1) * spacing / 2.0
         return [
-            float(start + index * self.lattice_d_resolution)
+            float(start + index * spacing)
             for index in range(count)
         ]
 

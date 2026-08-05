@@ -22,6 +22,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from controller.combined.src.Controller import Controller
 from controller.ftg.ftg import FTG
+from controller.offroad_planner.offroad_planner import OffRoadController, PlannerConfig
 
 
 # tunable L1 params (ROS1 controller.cfg / dyn_controller). All consumed by the
@@ -46,6 +47,41 @@ FTG_PARAMS = [
     'ftg_raceline_penalty_gain', 'ftg_raceline_lookahead_m',
     'ftg_no_gap_speed',
 ]
+
+# Chu et al. paper-planner parameters. Keys are ROS names and values are the
+# corresponding immutable PlannerConfig fields.
+OFFROAD_PARAM_MAP = {
+    'offroad_lateral_span_m': 'lateral_span_m',
+    'offroad_lateral_resolution_m': 'lateral_resolution_m',
+    'offroad_path_horizon_m': 'path_horizon_m',
+    'offroad_path_resolution_m': 'path_resolution_m',
+    'offroad_speed_horizon_gain_s': 'speed_horizon_gain_s',
+    'offroad_min_maneuver_m': 'min_maneuver_m',
+    'offroad_max_curvature': 'max_curvature',
+    'offroad_safety_sigma_m': 'safety_sigma_m',
+    'offroad_safety_weight': 'safety_weight',
+    'offroad_smoothness_weight': 'smoothness_weight',
+    'offroad_consistency_weight': 'consistency_weight',
+    'offroad_vehicle_length_m': 'vehicle_length_m',
+    'offroad_vehicle_width_m': 'vehicle_width_m',
+    'offroad_collision_margin_m': 'collision_margin_m',
+    'offroad_road_margin_m': 'road_margin_m',
+    'offroad_scan_max_range_m': 'scan_max_range_m',
+    'offroad_obstacle_cell_size_m': 'obstacle_cell_size_m',
+    'offroad_lidar_offset_x_m': 'lidar_offset_x_m',
+    'offroad_lidar_offset_y_m': 'lidar_offset_y_m',
+    'offroad_lidar_yaw_rad': 'lidar_yaw_rad',
+    'offroad_max_lateral_accel_mps2': 'max_lateral_accel_mps2',
+    'offroad_safety_speed_gain': 'safety_speed_gain',
+    'offroad_max_speed_mps': 'max_speed_mps',
+    'offroad_emergency_speed_mps': 'emergency_speed_mps',
+    'offroad_stop_distance_m': 'stop_distance_m',
+    'offroad_wheelbase_m': 'wheelbase_m',
+    'offroad_max_steer_rad': 'max_steer_rad',
+    'offroad_lookahead_min_m': 'lookahead_min_m',
+    'offroad_lookahead_speed_gain_s': 'lookahead_speed_gain_s',
+    'offroad_use_waypoint_bounds': 'use_waypoint_bounds',
+}
 
 
 class ControllerManager(Node):
@@ -118,6 +154,10 @@ class ControllerManager(Node):
         self.trailing_pub = self.create_publisher(Marker, 'trailing_opponent_marker', 10)
         self.l1_pub = self.create_publisher(Point, 'l1_distance', 10)
         self.predict_pub = self.create_publisher(MarkerArray, '/controller_prediction/markers', 10)
+        self.offroad_candidates_pub = self.create_publisher(
+            MarkerArray, '/offroad_planner/candidates', 10)
+        self.offroad_selected_pub = self.create_publisher(
+            Marker, '/offroad_planner/selected', 10)
         self.publish_topic = self._get_param('drive_topic', '/vesc/high_level/ackermann_cmd')
         self.drive_pub = self.create_publisher(AckermannDriveStamped, self.publish_topic, 10)
         if self.measuring:
@@ -142,6 +182,17 @@ class ControllerManager(Node):
             raceline_lookahead_m=self._get_param('ftg_raceline_lookahead_m', 1.5),
             no_gap_speed=self._get_param('ftg_no_gap_speed', 1.2),
         )
+
+        defaults = PlannerConfig()
+        offroad_values = {
+            field_name: self._get_param(param_name, getattr(defaults, field_name))
+            for param_name, field_name in OFFROAD_PARAM_MAP.items()
+        }
+        # Keep the direct controller's kinematics aligned with the main car model
+        # unless an explicit offroad_wheelbase_m override is supplied.
+        self.offroad_controller = OffRoadController(PlannerConfig(**offroad_values))
+        self.offroad_plan_rate_hz = float(self._get_param('offroad_plan_rate_hz', 20.0))
+        self._offroad_last_plan_sec = None
 
         # Subscribers
         self.create_subscription(BehaviorStrategy, '/behavior_strategy', self.behavior_cb, 10)
@@ -183,6 +234,18 @@ class ControllerManager(Node):
         if len(data.wpnts) < 2:
             return
         self.waypoints = np.array([[wpnt.x_m, wpnt.y_m] for wpnt in data.wpnts])
+        left_width = np.asarray([wpnt.d_left for wpnt in data.wpnts], dtype=float)
+        right_width = np.asarray([wpnt.d_right for wpnt in data.wpnts], dtype=float)
+        speed_limit = np.asarray([wpnt.vx_mps for wpnt in data.wpnts], dtype=float)
+        try:
+            self.offroad_controller.set_base_frame(
+                self.waypoints[:, 0], self.waypoints[:, 1],
+                left_width if np.any(left_width > 0.0) else None,
+                right_width if np.any(right_width > 0.0) else None,
+                speed_limit if np.any(speed_limit > 0.0) else None,
+            )
+        except (TypeError, ValueError) as exc:
+            self.get_logger().error(f"[{self.name}] OFFROAD base frame rejected: {exc}")
         # ROS1 read /global_republisher/track_length; derive from the waypoints' s_m
         self.track_length = data.wpnts[-1].s_m
         self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
@@ -231,6 +294,11 @@ class ControllerManager(Node):
                     setattr(self.controller, name, param.value)
             elif name in FTG_PARAMS:
                 self._apply_ftg_param(name, param.value)
+            elif name in OFFROAD_PARAM_MAP:
+                self.offroad_controller.update_config(
+                    **{OFFROAD_PARAM_MAP[name]: param.value})
+            elif name == 'offroad_plan_rate_hz':
+                self.offroad_plan_rate_hz = max(1.0, float(param.value))
             elif name == 'save_params' and param.value:
                 self._save_requested = True
         return SetParametersResult(successful=True)
@@ -283,6 +351,10 @@ class ControllerManager(Node):
             for p in FTG_PARAMS:                      # keep FTG tuning + current values
                 if self.has_parameter(p):
                     params[p] = self.get_parameter(p).value
+            for p in OFFROAD_PARAM_MAP:
+                if self.has_parameter(p):
+                    params[p] = self.get_parameter(p).value
+            params['offroad_plan_rate_hz'] = float(self.offroad_plan_rate_hz)
             params['save_params'] = False
             block = data.setdefault('controller_manager', {}).setdefault('ros__parameters', {})
             block.update(params)                      # merge: don't drop other keys
@@ -348,6 +420,9 @@ class ControllerManager(Node):
         self.waypoint_safety_counter = 0
         if data.state == "FTGONLY" and self.state != "FTGONLY":
             self.ftg_controller.reset_history()
+        if data.state == "OFFROADONLY" and self.state != "OFFROADONLY":
+            self.offroad_controller.reset_history()
+            self._offroad_last_plan_sec = None
         self.state = data.state
 
     def imu_cb(self, data):
@@ -380,10 +455,12 @@ class ControllerManager(Node):
         speed, acceleration, jerk, steering_angle = 0, 0, 0, 0
 
         # Logic to select controller
-        if self.state != "FTGONLY":
-            speed, acceleration, jerk, steering_angle = self.controller_cycle()
-        else:
+        if self.state == "FTGONLY":
             speed, steering_angle = self.ftg_cycle()
+        elif self.state == "OFFROADONLY":
+            speed, steering_angle = self.offroad_cycle()
+        else:
+            speed, acceleration, jerk, steering_angle = self.controller_cycle()
 
         ack_msg = self.create_ack_msg(speed, acceleration, jerk, steering_angle)
         self.drive_pub.publish(ack_msg)
@@ -437,6 +514,84 @@ class ControllerManager(Node):
             raceline_angle=raceline_angle)
         self.get_logger().warning(f"[{self.name}] FTGONLY!!!")
         return speed, steer
+
+    def offroad_cycle(self):
+        if self.scan is None:
+            self.get_logger().error(
+                f"[{self.name}] OFFROADONLY has no /scan; stopping",
+                throttle_duration_sec=0.5,
+            )
+            return 0.0, 0.0
+        now_sec = self.get_clock().now().nanoseconds * 1.0e-9
+        replan_period = 1.0 / max(self.offroad_plan_rate_hz, 1.0)
+        due = (
+            self._offroad_last_plan_sec is None
+            or now_sec - self._offroad_last_plan_sec >= replan_period
+        )
+        pose = np.asarray(self.position_in_map, dtype=float).reshape(-1)[:3]
+        if due:
+            try:
+                speed, steer = self.offroad_controller.process(
+                    pose, self.speed_now, self.scan.ranges,
+                    self.scan.angle_min, self.scan.angle_increment,
+                )
+            except (RuntimeError, TypeError, ValueError, FloatingPointError) as exc:
+                self.get_logger().error(
+                    f"[{self.name}] OFFROAD planning failed; stopping: {exc}",
+                    throttle_duration_sec=0.5,
+                )
+                return 0.0, 0.0
+            self._offroad_last_plan_sec = now_sec
+            self._publish_offroad_debug(self.offroad_controller.last_result)
+        else:
+            speed, steer = self.offroad_controller.command_from_last(pose, self.speed_now)
+        self.get_logger().warning(f"[{self.name}] OFFROADONLY!!!", throttle_duration_sec=0.5)
+        return speed, steer
+
+    def _publish_offroad_debug(self, result):
+        if result is None:
+            return
+        stamp = self.get_clock().now().to_msg()
+        markers = MarkerArray()
+        clear = Marker()
+        clear.header.frame_id = 'map'
+        clear.header.stamp = stamp
+        clear.action = Marker.DELETEALL
+        markers.markers.append(clear)
+        for candidate in result.candidates:
+            marker = Marker()
+            marker.header.frame_id = 'map'
+            marker.header.stamp = stamp
+            marker.id = candidate.index
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.scale.x = 0.012
+            marker.color.a = 0.35
+            marker.color.r = 1.0 if candidate.collision else 0.15
+            marker.color.g = 0.2 if candidate.collision else 0.65
+            marker.color.b = 0.2 if candidate.collision else 1.0
+            marker.pose.orientation.w = 1.0
+            marker.points = [Point(x=float(x), y=float(y), z=0.0)
+                             for x, y in zip(candidate.x, candidate.y)]
+            markers.markers.append(marker)
+        self.offroad_candidates_pub.publish(markers)
+
+        chosen = result.selected
+        marker = Marker()
+        marker.header.frame_id = 'map'
+        marker.header.stamp = stamp
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.045
+        marker.color.a = 1.0
+        marker.color.r = 1.0 if result.emergency else 0.0
+        marker.color.g = 0.45 if result.emergency else 1.0
+        marker.color.b = 0.0
+        marker.pose.orientation.w = 1.0
+        marker.points = [Point(x=float(x), y=float(y), z=0.02)
+                         for x, y in zip(chosen.x, chosen.y)]
+        self.offroad_selected_pub.publish(marker)
 
     def create_ack_msg(self, speed, acceleration, jerk, steering_angle):
         ack_msg = AckermannDriveStamped()

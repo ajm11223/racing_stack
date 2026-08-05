@@ -180,6 +180,7 @@ class StateMachine(Node):
         self.ot_sectors_params = {}
         self.only_ftg_zones = []
         self.ftg_counter = 0
+        self.offroad_counter = 0
 
         self.cur_s = 0.0
         self.cur_d = 0.0
@@ -303,6 +304,12 @@ class StateMachine(Node):
         self.ftg_timer_sec = self.params.ftg_timer_sec
         self.ftg_disabled = not self.params.ftg_active
 
+        # Chu et al. off-road planner trigger. It remains independent of FTG so
+        # either direct controller can be selected without modifying ftg.py.
+        self.offroad_speed_mps = self.params.offroad_speed_mps
+        self.offroad_timer_sec = self.params.offroad_timer_sec
+        self.offroad_disabled = not self.params.offroad_active
+
         # Force GBTRACK state
         self.force_gbtrack_state = self.params.force_GBTRACK
 
@@ -335,6 +342,7 @@ class StateMachine(Node):
             StateType.GB_TRACK: states.GlobalTracking,
             StateType.OVERTAKE: states.Overtaking,
             StateType.FTGONLY: states.FTGOnly,
+            StateType.OFFROADONLY: states.OffRoadOnly,
             StateType.RECOVERY: states.RECOVERY,
             StateType.START: states.START,
         }
@@ -345,6 +353,7 @@ class StateMachine(Node):
             StateType.ATTACK: state_transitions.TrailingTransition,
             StateType.OVERTAKE: state_transitions.OvertakingTransition,
             StateType.FTGONLY: state_transitions.FTGOnlyTransition,
+            StateType.OFFROADONLY: state_transitions.OffRoadOnlyTransition,
             StateType.START: state_transitions.StartTransition,
         }
 
@@ -910,6 +919,21 @@ class StateMachine(Node):
             else:
                 self.ftg_counter = 0
             return self.ftg_counter > threshold
+
+    def _check_offroad(self) -> bool:
+        threshold = self.offroad_timer_sec * self.rate_hz
+        if self.offroad_disabled:
+            return False
+        if (self.cur_state == StateType.TRAILING or self.cur_state == StateType.ATTACK) and \
+                self.cur_vs < self.offroad_speed_mps:
+            self.offroad_counter += 1
+            self.get_logger().warn(
+                f"[{self.name}] OFFROAD counter: {self.offroad_counter}/{threshold}",
+                throttle_duration_sec=0.5,
+            )
+        else:
+            self.offroad_counter = 0
+        return self.offroad_counter > threshold
 
     def _check_on_spline(self, wpnt_data) -> bool:
         if wpnt_data.is_init:
@@ -1751,6 +1775,10 @@ class StateMachine(Node):
             mrk.color.r = 1.0
             mrk.color.g = 1.0
             mrk.color.b = 1.0
+        elif state == "OFFROADONLY":
+            mrk.color.r = 0.0
+            mrk.color.g = 1.0
+            mrk.color.b = 1.0
         elif state == "RECOVERY":
             mrk.color.r = 0.0
             mrk.color.g = 1.0
@@ -1845,7 +1873,8 @@ class StateMachine(Node):
         keys = ["lateral_width_gb_m", "lateral_width_ot_m", "overtaking_ttl_sec",
                 "splini_hyst_timer_sec", "splini_ttl", "pred_splini_ttl",
                 "emergency_break_horizon", "ftg_speed_mps", "ftg_timer_sec",
-                "ftg_active", "force_GBTRACK"]
+                "ftg_active", "offroad_speed_mps", "offroad_timer_sec",
+                "offroad_active", "force_GBTRACK"]
         try:
             with open(path, "r") as f:
                 data = yaml.safe_load(f) or {}
@@ -1986,6 +2015,7 @@ class StateMachine(Node):
 
         if self.cur_state != StateType.TRAILING and self.cur_state != StateType.ATTACK:
             self.ftg_counter = 0
+            self.offroad_counter = 0
 
         overtaking_target_mrk = Marker()
         overtaking_target_mrk.header.frame_id = "map"  # set always so the DELETEALL marker isn't dropped by RViz (empty frame)

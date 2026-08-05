@@ -42,3 +42,8 @@ def FTGOnly(state_machine: "StateMachine"):
     """No waypoints are generated in this follow the gap only state, all the
     control inputs are generated in the control node."""
     return []
+
+
+def OffRoadOnly(state_machine: "StateMachine"):
+    """The Chu et al. planner owns control; state_machine supplies no path."""
+    return []

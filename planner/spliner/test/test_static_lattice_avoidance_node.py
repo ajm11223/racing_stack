@@ -120,16 +120,24 @@ def test_free_interval_width_selects_zero_one_three_or_five_samples(
 
 
 @pytest.mark.parametrize(
-    "width",
-    [0.70, 1.20, 2.40],
+    ("width", "expected_spacing"),
+    [
+        (1.20, 0.20),
+        (1.99, 0.20),
+        (2.00, 0.30),
+        (2.40, 0.30),
+    ],
 )
-def test_interval_samples_keep_fixed_lateral_spacing(width):
+def test_interval_samples_use_spacing_for_candidate_count(
+    width,
+    expected_spacing,
+):
     planner = make_planner()
 
     samples = planner._sample_free_interval(0.0, width)
 
     assert np.diff(samples) == pytest.approx(
-        np.full(len(samples) - 1, planner.lattice_d_resolution)
+        np.full(len(samples) - 1, expected_spacing)
     )
     assert np.mean(samples) == pytest.approx(width / 2.0)
 

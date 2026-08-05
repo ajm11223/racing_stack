@@ -45,6 +45,39 @@ controller_manager:
     ftg_raceline_penalty_gain: 0.4
     ftg_raceline_lookahead_m: 1.5
     ftg_no_gap_speed: 1.2
+    # Chu-Lee-Sunwoo (T-ITS 2012) off-road local path planner. Paper design
+    # parameters were not published; these defaults are scaled for F1TENTH.
+    offroad_plan_rate_hz: 20.0
+    offroad_lateral_span_m: 2.0
+    offroad_lateral_resolution_m: 0.1
+    offroad_path_horizon_m: 6.0
+    offroad_path_resolution_m: 0.1
+    offroad_speed_horizon_gain_s: 0.6
+    offroad_min_maneuver_m: 1.5
+    offroad_max_curvature: 1.55
+    offroad_safety_sigma_m: 0.25
+    offroad_safety_weight: 8.0
+    offroad_smoothness_weight: 1.0
+    offroad_consistency_weight: 2.0
+    offroad_vehicle_length_m: 0.58
+    offroad_vehicle_width_m: 0.31
+    offroad_collision_margin_m: 0.06
+    offroad_road_margin_m: 0.03
+    offroad_scan_max_range_m: 8.0
+    offroad_obstacle_cell_size_m: 0.05
+    offroad_lidar_offset_x_m: 0.0
+    offroad_lidar_offset_y_m: 0.0
+    offroad_lidar_yaw_rad: 0.0
+    offroad_max_lateral_accel_mps2: 3.0
+    offroad_safety_speed_gain: 0.7
+    offroad_max_speed_mps: 2.0
+    offroad_emergency_speed_mps: 0.6
+    offroad_stop_distance_m: 0.45
+    offroad_wheelbase_m: 0.33
+    offroad_max_steer_rad: 0.47
+    offroad_lookahead_min_m: 0.6
+    offroad_lookahead_speed_gain_s: 0.2
+    offroad_use_waypoint_bounds: true
     use_chord_cap: true
     l1_chord_err: 1.0
     save_params: false

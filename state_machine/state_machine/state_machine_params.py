@@ -32,6 +32,8 @@ class StateMachineParams:
         "emergency_break_horizon",
         "ftg_speed_mps",
         "ftg_timer_sec",
+        "offroad_speed_mps",
+        "offroad_timer_sec",
         "gb_ego_width_m",
         "gb_horizon_m",
         "interest_horizon_m",
@@ -266,6 +268,29 @@ class StateMachineParams:
         self._declare("ftg_active", False)
         self.ftg_active: bool = node.get_parameter("ftg_active").value
 
+        self._declare(
+            "offroad_speed_mps", 1.0,
+            ParameterDescriptor(
+                description="Speed threshold below which OFFROADONLY counts up [mps]",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=0.1, to_value=3.0, step=0.05)],
+            ),
+        )
+        self.offroad_speed_mps: float = node.get_parameter("offroad_speed_mps").value
+
+        self._declare(
+            "offroad_timer_sec", 0.5,
+            ParameterDescriptor(
+                description="Low-speed duration that triggers OFFROADONLY [s]",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=0.1, to_value=7.0, step=0.05)],
+            ),
+        )
+        self.offroad_timer_sec: float = node.get_parameter("offroad_timer_sec").value
+
+        self._declare("offroad_active", False)
+        self.offroad_active: bool = node.get_parameter("offroad_active").value
+
         self._declare("force_GBTRACK", False)
         self.force_GBTRACK: bool = node.get_parameter("force_GBTRACK").value
 
@@ -319,6 +344,9 @@ class StateMachineParams:
             elif name == "ftg_active":
                 self.ftg_active = value
                 self.node.ftg_disabled = not value
+            elif name == "offroad_active":
+                self.offroad_active = value
+                self.node.offroad_disabled = not value
             elif name == "save_start_traj":
                 # momentary: act + reset in the node timer (not inside this on-set cb)
                 if value:

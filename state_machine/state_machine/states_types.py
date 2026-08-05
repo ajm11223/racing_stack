@@ -6,6 +6,7 @@ class StateType(enum.Enum):
     TRAILING = 'TRAILING'
     OVERTAKE = 'OVERTAKE'
     FTGONLY = 'FTGONLY'
+    OFFROADONLY = 'OFFROADONLY'
     RECOVERY = 'RECOVERY'
     ATTACK = 'ATTACK'
     START = 'START'

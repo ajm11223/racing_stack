@@ -59,6 +59,8 @@ def TrailingTransition(state_machine: "StateMachine") -> Tuple[StateType, StateT
     if len(state_machine.cur_obstacles_in_interest) == 0:
         return NonObstacleTransition(state_machine, close_to_raceline)
     else:
+        if getattr(state_machine, "_check_offroad", lambda: False)():
+            return StateType.OFFROADONLY, StateType.OFFROADONLY
         if state_machine._check_ftg():
             return StateType.FTGONLY, StateType.FTGONLY
         return ObstacleTransition(state_machine, close_to_raceline)
@@ -101,13 +103,27 @@ def StartTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType
         return GlobalTrackingTransition(state_machine, close_to_raceline)
 
 def FTGOnlyTransition(state_machine):
+    return _IndependentOnlyTransition(state_machine, "ftg_counter")
+
+
+def OffRoadOnlyTransition(state_machine):
+    return _IndependentOnlyTransition(state_machine, "offroad_counter")
+
+
+def _IndependentOnlyTransition(state_machine, counter_name):
+    """Exit logic shared by sensor-direct controllers.
+
+    The independent controller retains authority until a collision-free lattice,
+    global or recovery path is genuinely available. This is the existing FTGONLY
+    policy, shared without changing the FTG controller implementation.
+    """
     close_to_raceline = (
         state_machine._check_close_to_raceline(0.05)
         and state_machine._check_close_to_raceline_heading(20)
     )
 
     if len(state_machine.cur_obstacles_in_interest) == 0:
-        state_machine.ftg_counter = 0
+        setattr(state_machine, counter_name, 0)
         return NonObstacleTransition(state_machine, close_to_raceline)
 
     # FTG 중에도 충돌 검사를 수행해서 closest_target을 다시 만든다.
@@ -131,18 +147,19 @@ def FTGOnlyTransition(state_machine):
         state_machine._check_overtaking_mode()
         or state_machine._check_static_overtaking_mode()
     ):
-        state_machine.ftg_counter = 0
+        setattr(state_machine, counter_name, 0)
         return StateType.OVERTAKE, StateType.OVERTAKE
 
     if close_to_raceline and gb_free:
-        state_machine.ftg_counter = 0
+        setattr(state_machine, counter_name, 0)
         return StateType.GB_TRACK, StateType.GB_TRACK
 
     if recovery_free:
-        state_machine.ftg_counter = 0
+        setattr(state_machine, counter_name, 0)
         return StateType.RECOVERY, StateType.RECOVERY
 
-    return StateType.FTGONLY, StateType.FTGONLY  
+    state = StateType.OFFROADONLY if counter_name == "offroad_counter" else StateType.FTGONLY
+    return state, state
 
 '''
 def FTGOnlyTransition(state_machine: "StateMachine") -> Tuple[StateType, StateType]:

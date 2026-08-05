@@ -7,6 +7,21 @@ import numpy as np
 from visualization_msgs.msg import Marker, MarkerArray
 
 
+def parse_l1_sectors(flat):
+    """Flat param list -> [(s_start, s_end, t_clip_min), ...].
+
+    The yaml side is a plain double array so it stays live-tunable through the
+    normal ROS2 param path: [s0_start, s0_end, s0_floor, s1_start, ...].
+    Values that don't complete a triple are dropped; a triple with floor <= 0
+    is a disabled sector. s_start > s_end means the sector wraps past s = 0.
+    """
+    if not flat:
+        return []
+    vals = [float(v) for v in flat]
+    return [tuple(vals[i:i + 3]) for i in range(0, len(vals) - 2, 3)
+            if vals[i + 2] > 0.0]
+
+
 class Controller:
     """This class implements the L1 / Pure-Pursuit controller for autonomous driving.
     Input and output topics are managed by the controller manager.
@@ -70,6 +85,13 @@ class Controller:
                 lat_err_steer_coeff=0.6931,  # v3; ln2 = legacy exp(ln2*d)
                 map_speed_blend=0.0,       # MAP lookup speed: 0 = reference, 1 = actual
 
+                ot_sectors=None,     # per-map s sectors where an OVERTAKE gets a
+                                     # shorter L1 floor: flat [start, end, floor, ...]
+                                     # (see parse_l1_sectors); empty -> feature off
+                ot_l1_hold_sec=0.0,     # keep the OVERTAKE L1 floor this long after
+                                        # the state leaves OVERTAKE
+                ot_l1_release_sec=0.0,  # then ramp it back to t_clip_min over this
+
                 predict_pub=None,
                 logger_info=logging.info,
                 logger_warn=logging.warning,
@@ -125,6 +147,15 @@ class Controller:
         self.l1_chord_err = l1_chord_err
         self.lat_err_steer_coeff = lat_err_steer_coeff
         self.map_speed_blend = map_speed_blend
+
+        # per-map OVERTAKE L1 floor sectors (see calc_future_L1_point). Stored
+        # parsed; the manager re-parses on a live param update.
+        self.ot_sectors = parse_l1_sectors(ot_sectors)
+        self.ot_l1_hold_sec = ot_l1_hold_sec
+        self.ot_l1_release_sec = ot_l1_release_sec
+        # latched OVERTAKE floor + ticks since the state left OVERTAKE
+        self.ot_l1_floor = None
+        self.ot_l1_ticks = 0
 
         # Parameters in the controller
         self.curr_steering_angle = 0
@@ -424,6 +455,48 @@ class Controller:
 
         return steering_angle
 
+    def sector_t_clip_min(self, s):
+        """L1 lower bound for the s sector the car is in, else the global one.
+
+        First matching sector wins, so overlapping ranges are resolved by the
+        order they are listed in the yaml.
+        """
+        for start, end, floor in self.ot_sectors:
+            inside = start <= s <= end if start <= end else (s >= start or s <= end)
+            if inside:
+                return floor
+        return self.t_clip_min
+
+    def ot_l1_floor_now(self):
+        """OVERTAKE L1 floor, held and ramped after the state leaves OVERTAKE.
+
+        The state machine drops OVERTAKE the moment the obstacle leaves the
+        lidar FOV, which is while the car is still alongside/just past it. A
+        hard snap back to t_clip_min there yanks the car onto the raceline. So
+        the sector floor is latched: held flat for ot_l1_hold_sec, then blended
+        linearly to t_clip_min over ot_l1_release_sec. Re-entering OVERTAKE
+        re-latches, so a second obstacle restarts the hold.
+        """
+        if self.state == "OVERTAKE":
+            self.ot_l1_floor = self.sector_t_clip_min(self.position_in_map_frenet[0])
+            self.ot_l1_ticks = 0
+            return self.ot_l1_floor
+
+        if self.ot_l1_floor is None:
+            return self.t_clip_min
+
+        self.ot_l1_ticks += 1
+        hold = self.ot_l1_hold_sec * self.loop_rate
+        ramp = self.ot_l1_release_sec * self.loop_rate
+        if self.ot_l1_ticks <= hold:
+            return self.ot_l1_floor
+        if self.ot_l1_ticks < hold + ramp:
+            alpha = (self.ot_l1_ticks - hold) / ramp
+            return self.ot_l1_floor + alpha * (self.t_clip_min - self.ot_l1_floor)
+
+        self.ot_l1_floor = None
+        return self.t_clip_min
+
     def calc_future_L1_point(self, future_lateral_error):
 
         # calculate future L1 guidance
@@ -444,8 +517,17 @@ class Controller:
 
         L1_distance = (speed_scaler - curvature_scaler) + self.q_l1
 
-        # clip lower bound to avoid ultraswerve when far away from mincurv
-        lower_bound = max(self.t_clip_min, np.sqrt(2)*future_lateral_error)
+        # clip lower bound to avoid ultraswerve when far away from mincurv.
+        # t_clip_min is tuned for the global line, which is far longer than the
+        # short lattice avoidance path needs: measured in map m's sigma section
+        # (s 16-24) it pinned L1 at 1.70 m for 100% of the OVERTAKE ticks while
+        # the speed term asked for 0.6 m, so the car cut the obstacle. Each
+        # ot_sectors triple gives one s range its own shorter floor, so every
+        # static obstacle on the track can be tuned independently.
+        t_clip_min = self.ot_l1_floor_now()
+        self.dbg["l1_floor"] = float(t_clip_min)
+        self.dbg["l1_floor_hold"] = float(self.ot_l1_ticks) if self.ot_l1_floor is not None else -1.0
+        lower_bound = max(t_clip_min, np.sqrt(2)*future_lateral_error)
 
         L1_distance = np.clip(L1_distance, lower_bound, self.t_clip_max)
 
@@ -455,7 +537,7 @@ class Controller:
         # the node. Fall back to the shortest safe lookahead until clean
         # waypoints return. Mirrors the finite-guards in main_loop.
         if not np.isfinite(L1_distance):
-            L1_distance = self.t_clip_min
+            L1_distance = t_clip_min
 
         # --- chord-error cap (v3) ---------------------------------------
         # Aiming a chord at a point L1 ahead on a curve cuts the corner by

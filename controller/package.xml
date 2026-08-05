@@ -19,6 +19,8 @@
   <depend>tf_transformations</depend>
   <depend>f110_msgs</depend>
   <depend>frenet_conversion</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
   <!-- MAP variant (map_controller_manager) soft-imports this at runtime -->
   <exec_depend>steering_lookup</exec_depend>
 
