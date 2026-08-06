@@ -1,9 +1,10 @@
 import math
-
 import numpy as np
 import pytest
 
-from controller.offroad_planner.offroad_planner import OffRoadController, OffRoadPlanner, PlannerConfig
+from controller.offroad_planner.offroad_planner import (
+    CandidatePath, OffRoadController, OffRoadPlanner, PlannerConfig,
+)
 
 
 def straight_frame(planner, *, width=None, speed=2.0):
@@ -21,6 +22,7 @@ def branch_displacement(path):
 def test_cubic_lateral_maneuver_satisfies_paper_boundary_conditions():
     config = PlannerConfig(
         use_waypoint_bounds=False,
+        use_early_curvature_quintic=False,
         path_horizon_m=4.0,
         path_resolution_m=0.01,
         min_maneuver_m=2.0,
@@ -39,6 +41,45 @@ def test_cubic_lateral_maneuver_satisfies_paper_boundary_conditions():
     assert (candidate.q[1] - candidate.q[0]) / config.path_resolution_m \
         == pytest.approx(math.tan(heading_error), abs=6.0e-3)
     assert np.max(np.abs(candidate.q[candidate.s_unwrapped >= 3.0] - 0.6)) < 1.0e-12
+
+
+def test_early_curvature_quintic_spreads_before_legacy_cubic_and_joins_smoothly():
+    common = dict(
+        use_waypoint_bounds=False,
+        use_quintic_fan=False,
+        path_horizon_m=4.0,
+        path_resolution_m=0.01,
+        min_maneuver_m=2.0,
+        speed_horizon_gain_s=0.0,
+        max_curvature=10.0,
+    )
+    early = OffRoadPlanner(PlannerConfig(
+        **common,
+        use_early_curvature_quintic=True,
+        early_curvature_gain=1.35,
+    ))
+    legacy = OffRoadPlanner(PlannerConfig(
+        **common,
+        use_early_curvature_quintic=False,
+    ))
+    straight_frame(early)
+    straight_frame(legacy)
+
+    early_path = early._generate_candidate(
+        0, 0.6, 1.0, 1.0, 0.0, 0.0, 0.0,
+    )
+    cubic_path = legacy._generate_candidate(
+        0, 0.6, 1.0, 1.0, 0.0, 0.0, 0.0,
+    )
+    early_index = int(round(0.4 / early.config.path_resolution_m))
+    goal_index = int(round(2.0 / early.config.path_resolution_m))
+
+    assert early_path.generation_mode == "early_curvature_quintic"
+    assert abs(early_path.q[early_index]) > abs(cubic_path.q[early_index])
+    assert early_path.q[0] == pytest.approx(0.0)
+    assert early_path.q[goal_index] == pytest.approx(0.6, abs=1.0e-10)
+    assert early_path.dq[goal_index] == pytest.approx(0.0, abs=1.0e-10)
+    assert early_path.curvature[goal_index] == pytest.approx(0.0, abs=1.0e-8)
 
 
 def test_quintic_fan_starts_with_sampled_steering_and_rejoins_raceline_pose():
@@ -80,13 +121,17 @@ def test_fan_samples_bounded_steering_and_legacy_mode_remains_available():
         if path.generation_mode == "quintic_fan"
     ]
     assert len(fan_candidates) == 7
-    assert any(path.generation_mode == "cubic_offset" for path in fan_result.candidates)
+    assert any(
+        path.generation_mode == "early_curvature_quintic"
+        for path in fan_result.candidates
+    )
     assert max(abs(path.initial_steer_rad) for path in fan_candidates) \
         <= fan.config.max_steer_rad + 1.0e-12
     assert any(abs(path.initial_steer_rad) < 1.0e-12 for path in fan_candidates)
 
     legacy = OffRoadPlanner(PlannerConfig(
         use_quintic_fan=False,
+        use_early_curvature_quintic=False,
         use_waypoint_bounds=False,
         lateral_span_m=1.0,
     ))
@@ -252,6 +297,53 @@ def test_direct_adapter_returns_bounded_ackermann_command():
     assert controller.last_result is not None
 
 
+def flat_path(planner, *, q, dq, samples=41, start_s=1.0):
+    """A hand-built candidate laid straight along the base frame."""
+    ds = np.arange(samples) * planner.config.path_resolution_m
+    q_arr = np.full(samples, float(q))
+    dq_arr = np.full(samples, float(dq))
+    return CandidatePath(
+        index=0,
+        final_offset_m=float(q),
+        s_unwrapped=start_s + ds,
+        s_mod=start_s + ds,
+        q=q_arr,
+        dq=dq_arr,
+        x=start_s + ds,
+        y=q_arr,
+        yaw=np.zeros(samples),
+        curvature=np.zeros(samples),
+        path_scale=np.full(samples, math.hypot(float(dq), 1.0)),
+    )
+
+
+
+def test_road_bound_check_uses_the_yawed_vehicle_footprint():
+    config = PlannerConfig(
+        vehicle_width_m=0.30,
+        vehicle_front_m=0.45,
+        vehicle_rear_m=0.10,
+        road_margin_m=0.0,
+        path_resolution_m=0.10,
+    )
+    planner = OffRoadPlanner(config)
+    straight_frame(planner, width=0.36)
+
+    # Aligned with the base frame: only the half-width reaches sideways.
+    aligned = planner._road_clearance(flat_path(planner, q=0.0, dq=0.0))
+    assert float(np.min(aligned)) == pytest.approx(0.36 - 0.15)
+
+    # q' = 0.75 means sin(theta) = 0.6, cos(theta) = 0.8, so the front overhang
+    # reaches 0.45 * 0.6 sideways. The centreline-only check never saw it.
+    yawed = planner._road_clearance(flat_path(planner, q=0.0, dq=0.75))
+    assert float(np.min(yawed)) == pytest.approx(0.36 - (0.15 * 0.8 + 0.45 * 0.6))
+    assert float(np.min(yawed)) < 0.0
+
+
+
+
+
+
 def test_closed_base_frame_keeps_consistency_across_the_lap_boundary():
     planner = OffRoadPlanner(PlannerConfig(
         lateral_span_m=1.0,
@@ -275,3 +367,60 @@ def test_closed_base_frame_keeps_consistency_across_the_lap_boundary():
 
     assert second.selected.s_unwrapped[0] > first.selected.s_unwrapped[0]
     assert np.isfinite(second.selected.consistency_cost)
+
+
+def test_colliding_path_is_clipped_at_the_first_collision():
+    config = PlannerConfig(
+        use_waypoint_bounds=False,
+        lateral_span_m=2.4,
+        speed_horizon_gain_s=0.0,
+        min_maneuver_m=1.5,
+        max_curvature=3.0,
+    )
+    planner = OffRoadPlanner(config)
+    straight_frame(planner)
+    wall = [(3.0, y) for y in np.linspace(-1.4, 1.4, 29)]
+
+    result = planner.plan(
+        (1.0, 0.0, 0.0), 0.5, [], 0.0, 0.01, obstacle_points=wall)
+    chosen = result.selected
+
+    # Algorithm 1 line 18 still returns a path; only its tail is cut.
+    assert result.emergency is True
+    assert 0 < chosen.collision_index < len(chosen.x)
+    assert chosen.valid_count == chosen.collision_index
+    assert float(np.max(chosen.x[:chosen.valid_count])) < 3.0 - config.vehicle_front_m
+
+
+def test_clipping_leaves_a_collision_free_path_whole():
+    planner = OffRoadPlanner(PlannerConfig())
+    straight_frame(planner, width=1.0)
+
+    chosen = planner.plan((1.0, 0.0, 0.0), 1.0, [], 0.0, 0.01).selected
+
+    assert chosen.collision is False
+    assert chosen.collision_index == -1
+    assert chosen.valid_count == len(chosen.x)
+
+
+def test_pure_pursuit_does_not_aim_past_the_collision():
+    config = PlannerConfig(lookahead_min_m=2.0, lookahead_speed_gain_s=0.0)
+    controller = OffRoadController(config)
+    straight_frame(controller, width=1.0)
+
+    samples = 41
+    ds = np.arange(samples) * config.path_resolution_m
+    tail = np.where(ds <= 1.0, 0.0, (ds - 1.0) ** 2)
+    blocked = CandidatePath(
+        index=0, final_offset_m=0.0, s_unwrapped=ds, s_mod=ds,
+        q=tail, dq=np.zeros(samples), x=ds, y=tail,
+        yaw=np.zeros(samples), curvature=np.zeros(samples),
+        path_scale=np.ones(samples),
+        collision=True, collision_index=11,
+    )
+
+    # The 2 m lookahead lands in the tail, which is behind the obstacle.
+    assert controller._pure_pursuit((0.0, 0.0, 0.0), 0.0, blocked) \
+        == pytest.approx(0.0, abs=1.0e-9)
+    blocked.collision, blocked.collision_index = False, -1
+    assert controller._pure_pursuit((0.0, 0.0, 0.0), 0.0, blocked) > 0.05

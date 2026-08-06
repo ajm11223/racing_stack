@@ -245,6 +245,16 @@ class StateMachineParams:
         self.overtaking_ttl_sec: float = node.get_parameter("overtaking_ttl_sec").value
 
         self._declare(
+            "offroad_ttl_sec", 1.0,
+            ParameterDescriptor(
+                description="Time OFFROADONLY remains active after all obstacles of interest disappear [s]",
+                type=ParameterType.PARAMETER_DOUBLE,
+                floating_point_range=[FloatingPointRange(from_value=0.0, to_value=10.0, step=0.05)],
+            ),
+        )
+        self.offroad_ttl_sec: float = node.get_parameter("offroad_ttl_sec").value
+
+        self._declare(
             "overtake_entry_ticks", 3,
             ParameterDescriptor(
                 description="Consecutive loops the overtake check must hold before "
@@ -255,6 +265,20 @@ class StateMachineParams:
             ),
         )
         self.overtake_entry_ticks: int = node.get_parameter("overtake_entry_ticks").value
+
+        self._declare(
+            "gb_return_ticks", 3,
+            ParameterDescriptor(
+                description="Consecutive loops the close-to-raceline check must hold "
+                            "before FTGONLY/OFFROADONLY/DWAONLY hand back to GB_TRACK. "
+                            "1 restores the old no-hysteresis behaviour. The heading "
+                            "part of that check is measured from a pose estimate, so a "
+                            "single noisy frame should not flip the state.",
+                type=ParameterType.PARAMETER_INTEGER,
+                integer_range=[IntegerRange(from_value=1, to_value=20, step=1)],
+            ),
+        )
+        self.gb_return_ticks: int = node.get_parameter("gb_return_ticks").value
 
         self._declare(
             "ftg_speed_mps", 0.1,
@@ -291,9 +315,6 @@ class StateMachineParams:
 
         self._declare("offroad_active", False)
         self.offroad_active: bool = node.get_parameter("offroad_active").value
-
-        self._declare("dwa_active", False)
-        self.dwa_active: bool = node.get_parameter("dwa_active").value
 
         self._declare("force_GBTRACK", False)
         self.force_GBTRACK: bool = node.get_parameter("force_GBTRACK").value
@@ -334,6 +355,12 @@ class StateMachineParams:
                 self.rate_hz = value
                 if self.node.main_loop is not None:
                     self.node.main_loop.timer_period_ns = int(1e9 / value)
+                self.node.overtaking_ttl_count_threshold = int(
+                    self.overtaking_ttl_sec * value
+                )
+                self.node.offroad_ttl_count_threshold = int(
+                    self.offroad_ttl_sec * value
+                )
             elif name == "splini_ttl":
                 if self.node.ot_planner == "spliner":
                     self.splini_ttl = value
@@ -345,19 +372,24 @@ class StateMachineParams:
             elif name == "overtaking_ttl_sec":
                 self.overtaking_ttl_sec = value
                 self.node.overtaking_ttl_count_threshold = int(value * self.rate_hz)
+            elif name == "offroad_ttl_sec":
+                self.offroad_ttl_sec = value
+                self.node.offroad_ttl_count_threshold = int(value * self.rate_hz)
+                self.node.offroad_ttl_count = 0
             elif name == "overtake_entry_ticks":
                 self.overtake_entry_ticks = value
                 self.node.overtake_entry_ticks = max(1, int(value))
                 self.node.overtake_entry_count = 0
+            elif name == "gb_return_ticks":
+                self.gb_return_ticks = value
+                self.node.gb_return_ticks = max(1, int(value))
+                self.node.gb_return_count = 0
             elif name == "ftg_active":
                 self.ftg_active = value
                 self.node.ftg_disabled = not value
             elif name == "offroad_active":
                 self.offroad_active = value
                 self.node.offroad_disabled = not value
-            elif name == "dwa_active":
-                self.dwa_active = value
-                self.node.dwa_disabled = not value
             elif name == "save_start_traj":
                 # momentary: act + reset in the node timer (not inside this on-set cb)
                 if value:

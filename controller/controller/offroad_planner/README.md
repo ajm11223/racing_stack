@@ -7,9 +7,10 @@ With Avoidance of Static Obstacles* (IEEE T-ITS, 2012) behind the independent
 Implemented paper stages:
 
 1. arc-length reparameterized cubic-spline base frame and Newton localization;
-2. cubic lateral-offset candidates with the paper's boundary conditions and
-   speed-dependent maneuver length;
-3. an optional quintic curvature fan that augments those candidates: every
+2. early-curvature quintic lateral-offset candidates that spread sooner and
+   join their target offsets with continuous terminal curvature; the paper's
+   cubic generator remains available as a fallback;
+3. an optional quintic curvature fan that augments the selected offset family: every
    branch starts with the measured vehicle heading, samples a bounded initial
    steering angle, and rejoins a common base-frame position, heading, and
    curvature;
@@ -20,10 +21,22 @@ Implemented paper stages:
 6. minimum-cost collision-free selection, longest-free-path fallback, and
    curvature/risk target-speed constraints.
 
-The curvature fan is enabled with `offroad_use_quintic_fan`. It is additive:
-the paper's lateral-offset candidates remain in the search set. Set the
-parameter to `false` to run only the original cubic search. The fan size and
-terminal pose are controlled by `offroad_fan_steering_samples`,
+The road-boundary rejection in stage 4 treats the vehicle as a rectangle
+carried at the path's heading rather than as a point on the path centreline:
+its lateral half-extent grows with the heading error, and `d_left`/`d_right`
+are taken as the tightest values inside the footprint's longitudinal span. A
+yawed vehicle can otherwise put a corner over the track bound while a
+centreline-only check still passes.
+
+The offset family uses early-curvature quintics when
+`offroad_use_early_curvature_quintic` is true. Their initial curvature deviation
+from the legacy cubic is scaled by `offroad_early_curvature_gain`; values above
+one spread the branches earlier. Set the boolean false to restore the paper's
+cubic offsets.
+
+The curvature fan is enabled with `offroad_use_quintic_fan`. It is additive to
+whichever offset family is selected. The fan size and terminal pose are
+controlled by `offroad_fan_steering_samples`,
 `offroad_fan_goal_distance_m`, and `offroad_fan_goal_offset_m`. The steering
 sample count must be an odd integer so the zero-steering branch is present.
 

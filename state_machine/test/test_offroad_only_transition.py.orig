@@ -38,7 +38,7 @@ def test_ftg_remains_available_when_offroad_trigger_is_disabled():
     assert source == StateType.FTGONLY
 
 
-def test_direct_controller_states_enter_overtake_after_consecutive_safe_paths():
+def test_direct_controller_states_never_transition_to_overtake():
     cases = (
         (FTGOnlyTransition, "ftg_counter", StateType.FTGONLY),
         (OffRoadOnlyTransition, "offroad_counter", StateType.OFFROADONLY),
@@ -56,7 +56,7 @@ def test_direct_controller_states_enter_overtake_after_consecutive_safe_paths():
             cur_gb_wpnts=None,
             recovery_wpnts=None,
             cur_recovery_wpnts=None,
-            overtake_entry_count=0,
+            overtake_entry_count=2,
             overtake_entry_ticks=3,
             gb_return_count=0,
             gb_return_ticks=3,
@@ -65,17 +65,11 @@ def test_direct_controller_states_enter_overtake_after_consecutive_safe_paths():
         )
         setattr(state_machine, counter_name, 0)
 
-        for expected_count in (1, 2):
-            state, source = transition(state_machine)
-            assert state == expected_state
-            assert source == expected_state
-            assert state_machine.overtake_entry_count == expected_count
-
         state, source = transition(state_machine)
 
-        assert state == StateType.OVERTAKE
-        assert source == StateType.OVERTAKE
-        assert state_machine.overtake_entry_count == 3
+        assert state == expected_state
+        assert source == expected_state
+        assert state_machine.overtake_entry_count == 0
 
 
 def test_offroad_holds_for_ttl_after_obstacle_disappears():
@@ -115,8 +109,6 @@ def test_offroad_obstacle_redetection_restarts_ttl():
         _check_latest_wpnts=lambda *args: False,
         cur_gb_wpnts=None,
         recovery_wpnts=None,
-        _check_overtaking_mode=lambda: False,
-        _check_static_overtaking_mode=lambda: False,
         cur_recovery_wpnts=None,
         overtake_entry_count=0,
         gb_return_count=0,

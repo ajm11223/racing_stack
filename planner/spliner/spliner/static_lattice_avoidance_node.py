@@ -729,6 +729,14 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                     selected_path,
                     gb_wpnts,
                 )
+                planned_ids = sorted({
+                    int(obstacle.id)
+                    for obstacle in expansion.planning_obstacles
+                    if int(obstacle.id) >= 0
+                })
+                wpnts.ot_line = "lattice:" + ",".join(
+                    str(obstacle_id) for obstacle_id in planned_ids
+                )
                 self.previous_selected_path = selected_path
         else:
             self.last_candidate_layers = []

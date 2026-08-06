@@ -4,8 +4,8 @@
 The implementation follows the paper's four online stages:
 
 1. localize the vehicle on an arc-length-parameterized cubic-spline base frame;
-2. generate curvilinear candidates using either the paper's cubic offsets or
-   a curvature fan of quintic paths that reunite with the base frame;
+2. generate curvilinear candidates using early-curvature quintic offsets (or
+   the paper's legacy cubic offsets) plus an optional steering-curvature fan;
 3. reject nonholonomic/colliding candidates and evaluate safety, curvature and
    path-consistency costs (equations 14--18);
 4. choose the lowest-cost free path, or the path with the longest free length
@@ -37,6 +37,18 @@ _EPS = 1.0e-9
 
 def _wrap_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _rolling_min(values: np.ndarray, back: int, ahead: int) -> np.ndarray:
+    """Minimum of ``values`` over a ``[-back, +ahead]`` index window, edge-clamped."""
+    if back <= 0 and ahead <= 0:
+        return values
+    out = values.copy()
+    for shift in range(1, ahead + 1):
+        out[:-shift] = np.minimum(out[:-shift], values[shift:])
+    for shift in range(1, back + 1):
+        out[shift:] = np.minimum(out[shift:], values[:-shift])
+    return out
 
 
 @dataclass(frozen=True)
@@ -79,6 +91,8 @@ class PlannerConfig:
     lookahead_min_m: float = 0.60
     lookahead_speed_gain_s: float = 0.20
     use_waypoint_bounds: bool = True
+    use_early_curvature_quintic: bool = True
+    early_curvature_gain: float = 1.35
     use_quintic_fan: bool = True
     fan_steering_samples: int = 9
     fan_goal_distance_m: float = 5.0
@@ -102,6 +116,7 @@ class PlannerConfig:
             "max_steer_rad": self.max_steer_rad,
             "lookahead_min_m": self.lookahead_min_m,
             "fan_goal_distance_m": self.fan_goal_distance_m,
+            "early_curvature_gain": self.early_curvature_gain,
         }
         bad = [name for name, value in positive.items() if not np.isfinite(value) or value <= 0.0]
         if bad:
@@ -138,6 +153,7 @@ class CandidatePath:
     s_unwrapped: np.ndarray
     s_mod: np.ndarray
     q: np.ndarray
+    dq: np.ndarray
     x: np.ndarray
     y: np.ndarray
     yaw: np.ndarray
@@ -148,11 +164,27 @@ class CandidatePath:
     goal_distance_m: float = 0.0
     feasible: bool = True
     collision: bool = False
+    # First sample index in collision; -1 while the whole path is clear.
+    collision_index: int = -1
     collision_free_length_m: float = 0.0
     safety_cost: float = 0.0
     smoothness_cost: float = 0.0
     consistency_cost: float = 0.0
     total_cost: float = math.inf
+
+    @property
+    def valid_count(self) -> int:
+        """Leading sample count that precedes the first collision.
+
+        When every candidate collides, Algorithm 1 line 18 still returns one --
+        the longest-free path -- and its tail runs through the obstacle or off
+        the road. That tail must not be drawn or steered towards, so RViz and
+        the pure-pursuit adapter both cut here. Selection and cost are
+        untouched: a collision-free path keeps all of its samples.
+        """
+        if self.collision_index < 0:
+            return len(self.x)
+        return int(np.clip(self.collision_index, min(2, len(self.x)), len(self.x)))
 
 
 @dataclass
@@ -409,7 +441,7 @@ class OffRoadPlanner:
             return np.asarray([0.5 * (q_min + q_max)])
         return np.arange(first, last + 0.5 * resolution, resolution)
 
-    def _generate_candidate(
+    def _generate_cubic_candidate(
         self,
         index: int,
         final_offset: float,
@@ -452,6 +484,132 @@ class OffRoadPlanner:
             generation_mode="cubic_offset",
             initial_steer_rad=0.0,
             goal_distance_m=maneuver,
+        )
+
+    @staticmethod
+    def _path_curvature_at(
+        q: float,
+        dq: float,
+        ddq: float,
+        base_curvature: float,
+    ) -> float:
+        """Evaluate equation (6) for one Frenet-profile sample."""
+        one_minus_qk = 1.0 - q * base_curvature
+        scale = math.hypot(dq, one_minus_qk)
+        orientation_sign = 1.0 if one_minus_qk >= 0.0 else -1.0
+        return (orientation_sign / max(scale, _EPS)) * (
+            base_curvature
+            + (one_minus_qk * ddq + base_curvature * dq**2)
+            / max(scale**2, _EPS)
+        )
+
+    def _generate_early_curvature_candidate(
+        self,
+        index: int,
+        final_offset: float,
+        current_s_mod: float,
+        current_s_unwrapped: float,
+        current_d: float,
+        heading_error: float,
+        speed_mps: float,
+    ) -> CandidatePath:
+        """Generate an offset candidate that separates early and settles smoothly.
+
+        The legacy cubic fixes position/slope at both ends, leaving its initial
+        curvature implicit and generally discontinuous when it becomes a
+        constant offset. This quintic retains the same start pose and target
+        offset, amplifies the cubic's initial curvature deviation, and adds
+        zero terminal second derivative for a smooth constant-offset join.
+        """
+        assert self.base_frame is not None
+        cfg = self.config
+        ds = np.arange(
+            0.0, cfg.path_horizon_m + 0.5 * cfg.path_resolution_m,
+            cfg.path_resolution_m,
+        )
+        maneuver = max(
+            cfg.min_maneuver_m + cfg.speed_horizon_gain_s * abs(speed_mps),
+            cfg.path_resolution_m,
+        )
+        dq0 = math.tan(float(np.clip(
+            heading_error, -math.radians(75.0), math.radians(75.0))))
+
+        # Start from the curvature implied by the paper's cubic, then amplify
+        # only its departure from the locally neutral (q''=0) path. Clipping
+        # the requested path curvature keeps the new branch inside the same
+        # nonholonomic limit used during full-path feasibility evaluation.
+        delta_q = final_offset - current_d
+        cubic_b = (3.0 * delta_q - 2.0 * dq0 * maneuver) / maneuver**2
+        cubic_ddq0 = 2.0 * cubic_b
+        base_curvature = float(self.base_frame.geometry(current_s_mod)[4])
+        neutral_curvature = self._path_curvature_at(
+            current_d, dq0, 0.0, base_curvature)
+        cubic_curvature = self._path_curvature_at(
+            current_d, dq0, cubic_ddq0, base_curvature)
+        requested_curvature = neutral_curvature + cfg.early_curvature_gain * (
+            cubic_curvature - neutral_curvature)
+        curvature_limit = min(
+            cfg.max_curvature,
+            math.tan(cfg.max_steer_rad) / cfg.wheelbase_m,
+        ) * (1.0 - 1.0e-6)
+        requested_curvature = float(np.clip(
+            requested_curvature, -curvature_limit, curvature_limit))
+        ddq0 = self._lateral_second_derivative_for_curvature(
+            current_d, dq0, base_curvature, requested_curvature)
+
+        coefficients = self._quintic_coefficients(
+            current_d, dq0, ddq0,
+            final_offset, 0.0, 0.0,
+            maneuver,
+        )
+        u = np.minimum(ds, maneuver)
+        q = sum(coefficients[power] * u**power for power in range(6))
+        dq = sum(
+            power * coefficients[power] * u ** (power - 1)
+            for power in range(1, 6)
+        )
+        ddq = sum(
+            power * (power - 1) * coefficients[power] * u ** (power - 2)
+            for power in range(2, 6)
+        )
+        finished = ds >= maneuver
+        q[finished] = final_offset
+        dq[finished] = 0.0
+        ddq[finished] = 0.0
+
+        return self._candidate_from_profile(
+            index=index,
+            final_offset=final_offset,
+            current_s_mod=current_s_mod,
+            current_s_unwrapped=current_s_unwrapped,
+            ds=ds,
+            q=q,
+            dq=dq,
+            ddq=ddq,
+            generation_mode="early_curvature_quintic",
+            initial_steer_rad=math.atan(cfg.wheelbase_m * requested_curvature),
+            goal_distance_m=maneuver,
+        )
+
+    def _generate_candidate(
+        self,
+        index: int,
+        final_offset: float,
+        current_s_mod: float,
+        current_s_unwrapped: float,
+        current_d: float,
+        heading_error: float,
+        speed_mps: float,
+    ) -> CandidatePath:
+        """Dispatch one target-offset branch to the configured generator."""
+        if self.config.use_early_curvature_quintic:
+            return self._generate_early_curvature_candidate(
+                index, final_offset, current_s_mod, current_s_unwrapped,
+                current_d, heading_error, speed_mps,
+            )
+        return self._generate_cubic_candidate(
+            index, final_offset, current_s_mod, current_s_unwrapped,
+            current_d, heading_error, speed_mps,
         )
 
     @staticmethod
@@ -612,6 +770,7 @@ class OffRoadPlanner:
             s_unwrapped=current_s_unwrapped + ds,
             s_mod=s_mod,
             q=q,
+            dq=dq,
             x=x,
             y=y,
             yaw=yaw,
@@ -622,6 +781,7 @@ class OffRoadPlanner:
             goal_distance_m=float(goal_distance_m),
             feasible=feasible,
             collision=not feasible,
+            collision_index=0 if not feasible else -1,
             collision_free_length_m=0.0 if not feasible else float(ds[-1]),
             smoothness_cost=smoothness if np.isfinite(smoothness) else math.inf,
         )
@@ -656,6 +816,39 @@ class OffRoadPlanner:
         occupied = np.unique(np.round(points / cell).astype(np.int64), axis=0)
         return occupied.astype(float) * cell
 
+    def _road_clearance(self, path: CandidatePath) -> np.ndarray:
+        """Signed clearance from the vehicle footprint to the nearer road edge.
+
+        Negative means the footprint is over the boundary. The vehicle is a
+        rectangle carried at the path's heading, so its lateral half-extent
+        grows with the heading error, and it spans several stations, so the
+        widths are taken as the tightest inside its longitudinal span. Checking
+        the path centreline alone (as the offset ``q`` does) lets a yawed
+        vehicle put a corner over the line while the check still passes.
+        """
+        assert self.base_frame is not None
+        cfg = self.config
+        if cfg.use_waypoint_bounds:
+            left, right = self.base_frame.bounds(path.s_mod, cfg.lateral_span_m / 2.0)
+        else:
+            half_span = cfg.lateral_span_m / 2.0
+            left = np.full_like(path.q, half_span)
+            right = np.full_like(path.q, half_span)
+        left = _rolling_min(left, int(math.ceil(cfg.vehicle_rear_m / cfg.path_resolution_m)),
+                            int(math.ceil(cfg.vehicle_front_m / cfg.path_resolution_m)))
+        right = _rolling_min(right, int(math.ceil(cfg.vehicle_rear_m / cfg.path_resolution_m)),
+                             int(math.ceil(cfg.vehicle_front_m / cfg.path_resolution_m)))
+
+        # Lateral reach of the rectangle's corners at this heading error. The
+        # sine/cosine come straight from the curvilinear derivatives, since
+        # equation (6)'s Q satisfies Q^2 = q'^2 + (1 - q*kappa)^2.
+        sin_theta = np.minimum(np.abs(path.dq) / np.maximum(path.path_scale, _EPS), 1.0)
+        cos_theta = np.sqrt(np.maximum(1.0 - sin_theta**2, 0.0))
+        half_width = cfg.vehicle_width_m / 2.0 + cfg.road_margin_m
+        longitudinal = max(cfg.vehicle_front_m, cfg.vehicle_rear_m) + cfg.road_margin_m
+        reach = half_width * cos_theta + longitudinal * sin_theta
+        return np.minimum(left - reach - path.q, right - reach + path.q)
+
     def _check_collision(self, path: CandidatePath, obstacle_points: np.ndarray) -> None:
         if not path.feasible:
             return
@@ -682,21 +875,19 @@ class OffRoadPlanner:
 
         # Road widths from the base waypoints act as occupied road-boundary cells.
         if cfg.use_waypoint_bounds and self.base_frame is not None:
-            half_vehicle = cfg.vehicle_width_m / 2.0 + cfg.road_margin_m
-            left, right = self.base_frame.bounds(path.s_mod, cfg.lateral_span_m / 2.0)
-            outside = np.flatnonzero(
-                (path.q + half_vehicle > left) | (path.q - half_vehicle < -right)
-            )
+            outside = np.flatnonzero(self._road_clearance(path) < 0.0)
             if outside.size:
                 collision_index = min(collision_index, int(outside[0]))
 
         if collision_index < len(path.x):
             path.collision = True
+            path.collision_index = collision_index
             path.collision_free_length_m = max(
                 0.0, float(path.s_unwrapped[collision_index] - path.s_unwrapped[0])
             )
         else:
             path.collision = False
+            path.collision_index = -1
             path.collision_free_length_m = float(path.s_unwrapped[-1] - path.s_unwrapped[0])
 
     def _consistency_cost(self, candidate: CandidatePath) -> float:
@@ -885,7 +1076,9 @@ class OffRoadController:
         lookahead = cfg.lookahead_min_m + cfg.lookahead_speed_gain_s * abs(speed_mps)
         path_distance = np.r_[0.0, np.cumsum(np.hypot(np.diff(path.x), np.diff(path.y)))]
         target_index = int(np.searchsorted(path_distance, lookahead, side="left"))
-        target_index = min(target_index, len(path.x) - 1)
+        # Never aim past the first collision.
+        target_index = min(target_index, len(path.x) - 1, path.valid_count - 1)
+        target_index = max(target_index, 1 if len(path.x) > 1 else 0)
         dx = float(path.x[target_index] - pose_arr[0])
         dy = float(path.y[target_index] - pose_arr[1])
         cy = math.cos(float(pose_arr[2]))

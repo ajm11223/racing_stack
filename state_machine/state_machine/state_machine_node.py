@@ -77,6 +77,7 @@ class WaypointData:
         self.is_ot_wpnts = False
         self.closest_target = None
         self.closest_gap = None
+        self.obstacle_ids = set()
         # Debug: last _check_free_frenet decision detail (per-obstacle branch/free_dist).
         self.free_dbg = None
         self.is_closed = is_closed
@@ -123,12 +124,29 @@ class WaypointData:
             self.stamp = wpnt.header.stamp
             self.list = wpnt.wpnts
             self.array = np.array([[w.x_m, w.y_m, w.s_m, w.d_m] for w in wpnt.wpnts])
+            self.obstacle_ids = obstacle_ids_from_wpnt_array(wpnt)
             self.is_init = True
             # Debug: when this cache was last replaced with fresh planner output.
             # Lets the loop snapshot report cache staleness (wall-clock since the
             # last real re-init) independently of the message header stamp.
             self.last_init_sec = self.node.now_sec()
             self.init_count += 1
+
+
+def obstacle_ids_from_wpnt_array(wpnt):
+    explicit_ids = getattr(wpnt, "obstacle_ids", None)
+    if explicit_ids:
+        return {int(obstacle_id) for obstacle_id in explicit_ids}
+
+    ot_line = str(getattr(wpnt, "ot_line", ""))
+    prefix = "lattice:"
+    if not ot_line.startswith(prefix):
+        return set()
+    return {
+        int(token)
+        for token in ot_line[len(prefix):].split(",")
+        if token
+    }
 
 
 def time_to_float(stamp) -> float:
@@ -181,7 +199,6 @@ class StateMachine(Node):
         self.only_ftg_zones = []
         self.ftg_counter = 0
         self.offroad_counter = 0
-        self.dwa_counter = 0
 
         self.cur_s = 0.0
         self.cur_d = 0.0
@@ -313,7 +330,6 @@ class StateMachine(Node):
         # either direct controller can be selected without modifying ftg.py.
         self.offroad_distance_m = self.params.offroad_distance_m
         self.offroad_disabled = not self.params.offroad_active
-        self.dwa_disabled = not self.params.dwa_active
 
         # Force GBTRACK state
         self.force_gbtrack_state = self.params.force_GBTRACK
@@ -321,6 +337,13 @@ class StateMachine(Node):
         self.overtaking_ttl_sec = self.params.overtaking_ttl_sec
         self.overtaking_ttl_count = 0
         self.overtaking_ttl_count_threshold = int(self.overtaking_ttl_sec * self.rate_hz)
+        self.offroad_ttl_sec = self.params.offroad_ttl_sec
+        self.offroad_ttl_count = 0
+        self.offroad_ttl_count_threshold = int(self.offroad_ttl_sec * self.rate_hz)
+        # Same-obstacle replans are held during one continuous OVERTAKE episode.
+        # A new episode must accept the first path newer than the pre-entry cache.
+        self._static_overtake_entry_refresh_pending = False
+        self._static_overtake_entry_cache_stamp = float("-inf")
         # Entry-side hysteresis. The overtake check is driven by the lattice
         # planner, whose output can appear and vanish within a single 0.1 s
         # freshness window when the free corridor sits near the hard-clearance
@@ -328,6 +351,12 @@ class StateMachine(Node):
         # falls back to TRAILING for a single loop. Exit keeps its own TTL.
         self.overtake_entry_ticks = max(1, int(self.params.overtake_entry_ticks))
         self.overtake_entry_count = 0
+        # Same idea on the way out of a sensor-direct controller: the
+        # close-to-raceline check now includes a heading term read from the pose
+        # estimate, and a single noisy frame must not hand the car back to
+        # GB_TRACK mid-manoeuvre. 1 restores the old immediate handover.
+        self.gb_return_ticks = max(1, int(self.params.gb_return_ticks))
+        self.gb_return_count = 0
         # Grace window (in loops) during which the OT-blended recovery path is allowed
         # as the recovery source. The blended path (OT heading -> GB) only makes sense
         # when leaving OVERTAKE; outside that window plain recovery is used, so a car
@@ -355,7 +384,6 @@ class StateMachine(Node):
             StateType.OVERTAKE: states.Overtaking,
             StateType.FTGONLY: states.FTGOnly,
             StateType.OFFROADONLY: states.OffRoadOnly,
-            StateType.DWAONLY: states.DWAOnly,
             StateType.RECOVERY: states.RECOVERY,
             StateType.START: states.START,
         }
@@ -367,7 +395,6 @@ class StateMachine(Node):
             StateType.OVERTAKE: state_transitions.OvertakingTransition,
             StateType.FTGONLY: state_transitions.FTGOnlyTransition,
             StateType.OFFROADONLY: state_transitions.OffRoadOnlyTransition,
-            StateType.DWAONLY: state_transitions.DWAOnlyTransition,
             StateType.START: state_transitions.StartTransition,
         }
 
@@ -804,12 +831,23 @@ class StateMachine(Node):
             return np.abs(self.cur_d) < threshold_m
 
     def _check_close_to_raceline_heading(self, threshold_deg=None) -> bool:
+        """Is the car pointing along the raceline, within threshold_deg?
+
+        The threshold_deg branch used to compare self.cur_d -- a lateral offset
+        in metres -- against deg2rad(threshold_deg), so it was a second lateral
+        check, not a heading one. Every caller passes a threshold explicitly, so
+        the heading was never actually tested; and because callers AND it with
+        _check_close_to_raceline(0.05), the bogus |d| < 0.349 term was always
+        absorbed by the tighter one and the bug stayed silent.
+        """
         cloest_wpnt_idx = int(self.cur_s / self.waypoints_dist) % self.num_glb_wpnts
         cloest_wpnt_psi = self.cur_gb_wpnts.list[cloest_wpnt_idx].psi_rad
-        if threshold_deg is None:
-            return np.abs(self.current_position[2] - cloest_wpnt_psi) < np.deg2rad(20)
-        else:
-            return np.abs(self.cur_d) < np.deg2rad(threshold_deg)
+        # atan2 of sin/cos wraps the difference into (-pi, pi]; a bare
+        # subtraction reads a car at +3.10 rad against a map at -3.10 rad as a
+        # 6.20 rad error instead of 0.08.
+        error = self.current_position[2] - cloest_wpnt_psi
+        error = np.abs(np.arctan2(np.sin(error), np.cos(error)))
+        return bool(error < np.deg2rad(20 if threshold_deg is None else threshold_deg))
 
     def _check_ot_sector(self) -> bool:
         # ROS1: no overtake zone matching cur_s -> not in an OT sector (return False).
@@ -943,14 +981,9 @@ class StateMachine(Node):
             self, self.offroad_disabled, "OFFROAD",
         )
 
-    def _check_dwa(self) -> bool:
-        return StateMachine._check_static_direct_controller_trigger(
-            self, self.dwa_disabled, "DWA",
-        )
-
     @staticmethod
     def _check_static_direct_controller_trigger(self, disabled: bool, label: str) -> bool:
-        """Shared OFFROAD/DWA trigger: static trailing target within the configured gap."""
+        """OFFROAD trigger: static trailing target within the configured gap."""
         if disabled:
             return False
         if self.cur_state not in (StateType.TRAILING, StateType.ATTACK):
@@ -1372,23 +1405,77 @@ class StateMachine(Node):
 
     def _check_overtaking_mode_sustainability(self) -> bool:
         if self.static_overtaking_mode:
-            # A static lattice path may need to change while OVERTAKE is already
-            # active (for example when a second obstacle is detected after the
-            # first path was cached).  Prefer each strictly newer, fresh, on-spline
-            # planner result; if the planner emits an empty/stale frame, the normal
-            # availability hysteresis below keeps the last valid path.
-            fresh_static_path = self._check_latest_wpnts(
-                self.static_avoidance_wpnts,
-                self.cur_static_avoidance_wpnts,
+            # Hold the path captured on OVERTAKE entry. Replace it only when the
+            # lattice planner reports a path containing a previously unplanned
+            # obstacle. Same-obstacle replans would pull the return point toward
+            # the moving vehicle on every planner tick.
+            incoming_ids = obstacle_ids_from_wpnt_array(
+                self.static_avoidance_wpnts
+            )
+            cached_ids = getattr(
+                self.cur_static_avoidance_wpnts, "obstacle_ids", set()
+            )
+            incoming_has_path = bool(
+                getattr(self.static_avoidance_wpnts, "wpnts", [])
+            )
+            incoming_stamp = getattr(
+                getattr(self.static_avoidance_wpnts, "header", None),
+                "stamp",
+                None,
+            )
+            incoming_stamp_sec = (
+                float("-inf")
+                if incoming_stamp is None
+                else time_to_float(incoming_stamp)
+            )
+            entry_refresh_pending = getattr(
+                self, "_static_overtake_entry_refresh_pending", False
+            )
+            entry_has_fresh_path = bool(
+                entry_refresh_pending
+                and incoming_has_path
+                and incoming_stamp_sec
+                > getattr(
+                    self,
+                    "_static_overtake_entry_cache_stamp",
+                    float("-inf"),
+                )
+            )
+            cache_updated = False
+            if incoming_ids - cached_ids or entry_has_fresh_path:
+                cache_updated = self._check_latest_wpnts(
+                    self.static_avoidance_wpnts,
+                    self.cur_static_avoidance_wpnts,
+                )
+            if entry_has_fresh_path and cache_updated:
+                cached_stamp_after_update = self.cur_static_avoidance_wpnts.stamp
+                if (
+                    cached_stamp_after_update is not None
+                    and time_to_float(cached_stamp_after_update)
+                    >= incoming_stamp_sec
+                ):
+                    self._static_overtake_entry_refresh_pending = False
+            incoming_is_live = bool(
+                incoming_has_path
+                and incoming_stamp is not None
+                and self.now_sec() - time_to_float(incoming_stamp)
+                <= self.cur_static_avoidance_wpnts.killing_timer_sec
+            )
+            cached_stamp = self.cur_static_avoidance_wpnts.stamp
+            if (
+                not incoming_is_live
+                and cached_stamp is not None
+                and self.now_sec() - time_to_float(cached_stamp)
+                > self.cur_static_avoidance_wpnts.killing_timer_sec
+            ):
+                self.cur_static_avoidance_wpnts.is_init = False
+
+            cached_path_available = bool(
+                self.cur_static_avoidance_wpnts.is_init
+                and self._check_on_spline(self.cur_static_avoidance_wpnts)
             )
             if (
-                (
-                    fresh_static_path
-                    or self._check_availability(
-                        self.static_avoidance_wpnts,
-                        self.cur_static_avoidance_wpnts,
-                    )
-                )
+                cached_path_available
                 and self._check_free_frenet(self.cur_static_avoidance_wpnts)
             ):
                 return True
@@ -1852,10 +1939,6 @@ class StateMachine(Node):
             mrk.color.r = 0.0
             mrk.color.g = 1.0
             mrk.color.b = 1.0
-        elif state == "DWAONLY":
-            mrk.color.r = 1.0
-            mrk.color.g = 0.45
-            mrk.color.b = 0.0
         elif state == "RECOVERY":
             mrk.color.r = 0.0
             mrk.color.g = 1.0
@@ -1948,10 +2031,11 @@ class StateMachine(Node):
             self.get_logger().error(f"[{self.name}] cannot locate state_machine_params.yaml")
             return
         keys = ["lateral_width_gb_m", "lateral_width_ot_m", "overtaking_ttl_sec",
+                "offroad_ttl_sec",
                 "splini_hyst_timer_sec", "splini_ttl", "pred_splini_ttl",
                 "emergency_break_horizon", "ftg_speed_mps", "ftg_timer_sec",
                 "ftg_active", "offroad_distance_m",
-                "offroad_active", "dwa_active", "force_GBTRACK"]
+                "offroad_active", "force_GBTRACK"]
         try:
             with open(path, "r") as f:
                 data = yaml.safe_load(f) or {}
@@ -2021,7 +2105,22 @@ class StateMachine(Node):
             self.local_wpnts_src = StateType.FTGONLY
             self.get_logger().warn(f"[{self.name}] FTGONLY sector !!!")
         else:
+            previous_state = self.cur_state
+            previous_static_stamp = self.cur_static_avoidance_wpnts.stamp
             self.cur_state, self.local_wpnts_src = self.state_transitions[self.cur_state](self)
+            if (
+                previous_state != StateType.OVERTAKE
+                and self.cur_state == StateType.OVERTAKE
+                and self.static_overtaking_mode
+            ):
+                self._static_overtake_entry_cache_stamp = (
+                    float("-inf")
+                    if previous_static_stamp is None
+                    else time_to_float(previous_static_stamp)
+                )
+                self._static_overtake_entry_refresh_pending = True
+            elif self.cur_state != StateType.OVERTAKE:
+                self._static_overtake_entry_refresh_pending = False
 
         if self.cur_state == StateType.TRAILING:
             # NOTE: check_ot_cloest_target() intentionally NOT called -- it promoted the
@@ -2093,7 +2192,8 @@ class StateMachine(Node):
         if self.cur_state != StateType.TRAILING and self.cur_state != StateType.ATTACK:
             self.ftg_counter = 0
             self.offroad_counter = 0
-            self.dwa_counter = 0
+        if self.cur_state != StateType.OFFROADONLY:
+            self.offroad_ttl_count = 0
 
         overtaking_target_mrk = Marker()
         overtaking_target_mrk.header.frame_id = "map"  # set always so the DELETEALL marker isn't dropped by RViz (empty frame)

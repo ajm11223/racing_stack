@@ -27,7 +27,6 @@ state_machine:
     ftg_active: false
     offroad_distance_m: 3.0      # 차량에서 정적 trailing target의 앞면(s_start)까지 진입 거리 [m]
     offroad_active: true
-    offroad_ttl_sec: 1.0         # 관심 장애물 소실 후 OFFROADONLY 유지 시간 [s]
     force_GBTRACK: false
     use_force_trailing: false
     save_params: false

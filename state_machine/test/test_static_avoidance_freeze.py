@@ -17,10 +17,11 @@ def waypoint(x, y, s, d):
     return SimpleNamespace(x_m=x, y_m=y, s_m=s, d_m=d)
 
 
-def planner_message(stamp_sec, wpnts):
+def planner_message(stamp_sec, wpnts, obstacle_ids=()):
     return SimpleNamespace(
         header=SimpleNamespace(stamp=stamp(stamp_sec)),
         wpnts=wpnts,
+        obstacle_ids=list(obstacle_ids),
     )
 
 
@@ -36,6 +37,7 @@ class Cache:
         self.stamp = stamp(stamp_sec)
         self.is_init = True
         self.frozen = False
+        self.obstacle_ids = {1}
         self.latest_threshold = 0.1
         self.hyst_timer_sec = 4.0
         self.killing_timer_sec = 10.0
@@ -51,6 +53,7 @@ class Cache:
             [[wp.x_m, wp.y_m, wp.s_m, wp.d_m] for wp in self.list]
         )
         self.is_init = True
+        self.obstacle_ids = set(message.obstacle_ids)
         self.last_init_sec = self.node.now_sec()
         self.init_count += 1
 
@@ -65,23 +68,78 @@ def make_state_machine(now=101.55):
     node.cur_static_avoidance_wpnts = Cache()
     node.cur_static_avoidance_wpnts.node = node
     node._check_free_frenet = lambda _cache: True
+    node._static_overtake_entry_refresh_pending = False
+    node._static_overtake_entry_cache_stamp = float("-inf")
     return node
 
 
-def test_sequential_static_replan_replaces_cache_inside_hysteresis():
+def test_same_obstacle_static_replan_keeps_entry_path():
     node = make_state_machine()
     new_path = [
         waypoint(0.0, 0.0, 10.0, 0.35),
         waypoint(3.0, 0.0, 13.0, 0.35),
     ]
-    node.static_avoidance_wpnts = planner_message(101.50, new_path)
+    node.static_avoidance_wpnts = planner_message(101.50, new_path, [1])
+
+    sustainable = node._check_overtaking_mode_sustainability()
+
+    assert sustainable is True
+    assert node.cur_static_avoidance_wpnts.list is not new_path
+    assert node.cur_static_avoidance_wpnts.stamp.sec == 100
+    assert node.cur_static_avoidance_wpnts.init_count == 1
+
+
+def test_new_obstacle_static_replan_replaces_entry_path():
+    node = make_state_machine()
+    new_path = [
+        waypoint(0.0, 0.0, 10.0, 0.35),
+        waypoint(3.0, 0.0, 13.0, 0.35),
+    ]
+    node.static_avoidance_wpnts = planner_message(101.50, new_path, [1, 2])
 
     sustainable = node._check_overtaking_mode_sustainability()
 
     assert sustainable is True
     assert node.cur_static_avoidance_wpnts.list is new_path
-    assert node.cur_static_avoidance_wpnts.stamp.sec == 101
+    assert node.cur_static_avoidance_wpnts.obstacle_ids == {1, 2}
     assert node.cur_static_avoidance_wpnts.init_count == 2
+
+
+def test_same_obstacle_reentry_accepts_first_fresh_path():
+    node = make_state_machine()
+    node._static_overtake_entry_refresh_pending = True
+    node._static_overtake_entry_cache_stamp = 100.0
+    new_path = [
+        waypoint(0.0, 0.0, 10.0, 0.35),
+        waypoint(3.0, 0.0, 13.0, 0.35),
+    ]
+    node.static_avoidance_wpnts = planner_message(101.50, new_path, [1])
+
+    sustainable = node._check_overtaking_mode_sustainability()
+
+    assert sustainable is True
+    assert node.cur_static_avoidance_wpnts.list is new_path
+    assert node.cur_static_avoidance_wpnts.obstacle_ids == {1}
+    assert node.cur_static_avoidance_wpnts.init_count == 2
+    assert node._static_overtake_entry_refresh_pending is False
+
+
+def test_same_obstacle_reentry_waits_for_newer_path():
+    node = make_state_machine()
+    node._static_overtake_entry_refresh_pending = True
+    node._static_overtake_entry_cache_stamp = 100.0
+    old_path = [
+        waypoint(0.0, 0.0, 10.0, 0.35),
+        waypoint(3.0, 0.0, 13.0, 0.35),
+    ]
+    node.static_avoidance_wpnts = planner_message(100.0, old_path, [1])
+
+    sustainable = node._check_overtaking_mode_sustainability()
+
+    assert sustainable is True
+    assert node.cur_static_avoidance_wpnts.list is not old_path
+    assert node.cur_static_avoidance_wpnts.init_count == 1
+    assert node._static_overtake_entry_refresh_pending is True
 
 
 def test_discontinuous_static_replan_is_rejected_atomically():

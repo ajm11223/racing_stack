@@ -88,8 +88,8 @@ class Controller:
                 ot_sectors=None,     # per-map s sectors where an OVERTAKE gets a
                                      # shorter L1 floor: flat [start, end, floor, ...]
                                      # (see parse_l1_sectors); empty -> feature off
-                ot_l1_hold_sec=0.0,     # keep the OVERTAKE L1 floor this long after
-                                        # the state leaves OVERTAKE
+                ot_l1_hold_sec=0.0,     # keep the avoidance L1 floor this long after
+                                        # OVERTAKE/OFFROADONLY ends
                 ot_l1_release_sec=0.0,  # then ramp it back to t_clip_min over this
 
                 predict_pub=None,
@@ -153,7 +153,8 @@ class Controller:
         self.ot_sectors = parse_l1_sectors(ot_sectors)
         self.ot_l1_hold_sec = ot_l1_hold_sec
         self.ot_l1_release_sec = ot_l1_release_sec
-        # latched OVERTAKE floor + ticks since the state left OVERTAKE
+        # Latched avoidance floor + ticks since OVERTAKE/OFFROADONLY ended.
+        # Attribute names stay ot_l1_* for parameter compatibility.
         self.ot_l1_floor = None
         self.ot_l1_ticks = 0
 
@@ -467,20 +468,45 @@ class Controller:
                 return floor
         return self.t_clip_min
 
+    def latch_l1_floor(self, floor=None, s=None):
+        """Latch a short avoidance lookahead before the post-state release.
+
+        OVERTAKE gets its floor from the configured Frenet-s sector. OFFROADONLY
+        bypasses this controller, so its manager supplies the lookahead used by
+        the off-road Pure Pursuit controller when that state ends.
+        """
+        if floor is None:
+            if s is None:
+                s = self.position_in_map_frenet[0]
+            floor = self.sector_t_clip_min(s)
+        floor = float(floor)
+        self.ot_l1_floor = floor if np.isfinite(floor) else self.t_clip_min
+        self.ot_l1_ticks = 0
+        return self.ot_l1_floor
+
+    def latch_offroad_l1_floor(
+        self, lookahead_min_m, lookahead_speed_gain_s, speed_mps
+    ):
+        """Latch the lookahead used by OFFROADONLY at handover."""
+        floor = (
+            float(lookahead_min_m)
+            + float(lookahead_speed_gain_s) * abs(float(speed_mps))
+        )
+        return self.latch_l1_floor(floor=min(self.t_clip_min, floor))
+
     def ot_l1_floor_now(self):
-        """OVERTAKE L1 floor, held and ramped after the state leaves OVERTAKE.
+        """Avoidance L1 floor, held and ramped after its state ends.
 
         The state machine drops OVERTAKE the moment the obstacle leaves the
         lidar FOV, which is while the car is still alongside/just past it. A
         hard snap back to t_clip_min there yanks the car onto the raceline. So
         the sector floor is latched: held flat for ot_l1_hold_sec, then blended
         linearly to t_clip_min over ot_l1_release_sec. Re-entering OVERTAKE
-        re-latches, so a second obstacle restarts the hold.
+        re-latches, so a second obstacle restarts the hold. OFFROADONLY uses the
+        same release after its direct controller hands control back.
         """
         if self.state == "OVERTAKE":
-            self.ot_l1_floor = self.sector_t_clip_min(self.position_in_map_frenet[0])
-            self.ot_l1_ticks = 0
-            return self.ot_l1_floor
+            return self.latch_l1_floor(s=self.position_in_map_frenet[0])
 
         if self.ot_l1_floor is None:
             return self.t_clip_min
