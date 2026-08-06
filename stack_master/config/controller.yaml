@@ -52,14 +52,15 @@ controller_manager:
     offroad_lateral_resolution_m: 0.1
     offroad_path_horizon_m: 6.0
     offroad_path_resolution_m: 0.1
-    offroad_speed_horizon_gain_s: 0.6
-    offroad_min_maneuver_m: 1.5
+    offroad_speed_horizon_gain_s: 0.4
+    offroad_min_maneuver_m: 1.4
     offroad_max_curvature: 1.55
     offroad_safety_sigma_m: 0.25
     offroad_safety_weight: 8.0
     offroad_smoothness_weight: 1.0
     offroad_consistency_weight: 2.0
-    offroad_vehicle_length_m: 0.58
+    offroad_vehicle_front_m: 0.45
+    offroad_vehicle_rear_m: 0.10
     offroad_vehicle_width_m: 0.31
     offroad_collision_margin_m: 0.06
     offroad_road_margin_m: 0.03
@@ -78,6 +79,40 @@ controller_manager:
     offroad_lookahead_min_m: 0.6
     offroad_lookahead_speed_gain_s: 0.2
     offroad_use_waypoint_bounds: true
+    # Quintic curvature fan: false restores the backed-up paper cubic-offset search.
+    offroad_use_quintic_fan: true
+    offroad_fan_steering_samples: 9
+    offroad_fan_goal_distance_m: 5.0
+    offroad_fan_goal_offset_m: 0.0
+    # Dynamic Window Approach (08_Local_path_planning practice PDF).
+    dwa_plan_rate_hz: 20.0                    # dynamic window를 다시 계산하는 주기 [Hz]
+    dwa_min_speed_mps: 0.0                    # DWA가 샘플링할 최저 전진 속도 [m/s]
+    dwa_max_speed_mps: 2.0                    # DWAONLY 목표 속도의 절대 상한 [m/s]
+    dwa_max_accel_mps2: 2.5                   # 동적 속도창의 가속 한계 a_max [m/s^2]
+    dwa_max_decel_mps2: 4.0                   # 동적 속도창의 감속 한계 |a_min| [m/s^2]
+    dwa_max_steer_rad: 0.47                   # 조향 샘플의 절댓값 상한 delta_max [rad]
+    dwa_max_steer_rate_radps: 3.0             # 동적 조향창의 최대 조향 변화율 [rad/s]
+    dwa_velocity_resolution_mps: 0.10         # 속도 후보 사이의 샘플 간격 Delta v [m/s]
+    dwa_steer_resolution_rad: 0.04            # 조향 후보 사이의 샘플 간격 Delta delta [rad]
+    dwa_predict_time_s: 1.5                   # 각 (v,delta)를 전개하는 예측 시간 T_pred [s]
+    dwa_prediction_dt_s: 0.10                 # bicycle model trajectory 적분 간격 [s]
+    dwa_dynamic_window_dt_s: 0.05             # 현재 명령에서 도달 가능한 동적 창을 계산할 Delta t [s]
+    dwa_wheelbase_m: 0.33                     # kinematic bicycle model 축거 L [m]
+    dwa_goal_lookahead_m: 2.5                 # global waypoint에서 고르는 전방 heading 목표 거리 [m]
+    dwa_heading_weight: 2.0                   # 정규화된 goal heading 오차 비용 가중치 alpha
+    dwa_obstacle_weight: 4.0                  # 정규화된 장애물 안전거리 비용 가중치 beta
+    dwa_velocity_weight: 1.0                  # 정규화된 저속 비용 가중치 gamma (클수록 빠른 후보 선호)
+    dwa_safety_radius_m: 0.35                 # 차량 footprint 표면부터 장애물 비용이 생기는 거리 [m]
+    dwa_obstacle_cost_scale_m: 0.20           # 안전 반경 침범량의 exponential 비용 증가 길이척도 [m]
+    dwa_vehicle_front_m: 0.45                 # base_link에서 차량 앞끝까지 hard collision 길이 [m]
+    dwa_vehicle_rear_m: 0.10                  # base_link에서 차량 뒤끝까지 hard collision 길이 [m]
+    dwa_vehicle_width_m: 0.31                 # hard collision 검사에 사용하는 전체 차량 폭 [m]
+    dwa_collision_margin_m: 0.06              # footprint 사방에 더하는 hard collision 여유 [m]
+    dwa_scan_min_range_m: 0.03                # 이보다 가까운 비정상 LiDAR return을 무시 [m]
+    dwa_scan_max_range_m: 8.0                 # 장애물 검사에 사용할 최대 LiDAR 거리 [m]
+    dwa_lidar_offset_x_m: 0.0                 # base_link 기준 LiDAR 전방(+)/후방(-) 위치 [m]
+    dwa_lidar_offset_y_m: 0.0                 # base_link 기준 LiDAR 좌측(+)/우측(-) 위치 [m]
+    dwa_lidar_yaw_rad: 0.0                    # base_link 전방축에 대한 LiDAR 좌측(+) 회전 [rad]
     use_chord_cap: true
     l1_chord_err: 1.0
     save_params: false

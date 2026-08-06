@@ -47,3 +47,8 @@ def FTGOnly(state_machine: "StateMachine"):
 def OffRoadOnly(state_machine: "StateMachine"):
     """The Chu et al. planner owns control; state_machine supplies no path."""
     return []
+
+
+def DWAOnly(state_machine: "StateMachine"):
+    """The DWA controller owns control; state_machine supplies no path."""
+    return []

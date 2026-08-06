@@ -59,6 +59,10 @@ def TrailingTransition(state_machine: "StateMachine") -> Tuple[StateType, StateT
     if len(state_machine.cur_obstacles_in_interest) == 0:
         return NonObstacleTransition(state_machine, close_to_raceline)
     else:
+        # DWA and OFFROAD deliberately share the same static-target trigger.
+        # DWA wins when both are enabled; disable dwa_active to select OFFROAD.
+        if getattr(state_machine, "_check_dwa", lambda: False)():
+            return StateType.DWAONLY, StateType.DWAONLY
         if getattr(state_machine, "_check_offroad", lambda: False)():
             return StateType.OFFROADONLY, StateType.OFFROADONLY
         if state_machine._check_ftg():
@@ -77,6 +81,10 @@ def OvertakingTransition(state_machine: "StateMachine") -> Tuple[StateType, Stat
         state_machine.overtaking_ttl_count += 1
         return StateType.OVERTAKE, StateType.OVERTAKE
     state_machine.overtaking_ttl_count = 0
+    # Leaving OVERTAKE: a re-entry has to earn a fresh consecutive streak,
+    # otherwise the count left over from this overtake would let the very next
+    # loop bounce straight back in and defeat the entry hysteresis.
+    state_machine.overtake_entry_count = 0
     # Preserve lateral continuity when a newly visible obstacle invalidates the
     # active OT path.  TRAILING uses an exact snapshot of the last OT geometry as
     # its recovery source instead of snapping immediately to GB/recovery.  Its
@@ -108,6 +116,10 @@ def FTGOnlyTransition(state_machine):
 
 def OffRoadOnlyTransition(state_machine):
     return _IndependentOnlyTransition(state_machine, "offroad_counter")
+
+
+def DWAOnlyTransition(state_machine):
+    return _IndependentOnlyTransition(state_machine, "dwa_counter")
 
 
 def _IndependentOnlyTransition(state_machine, counter_name):
@@ -142,13 +154,19 @@ def _IndependentOnlyTransition(state_machine, counter_name):
         )
     )
 
-    # 안전한 새 lattice 경로를 가장 먼저 채택
+    # 안전한 새 lattice 경로를 가장 먼저 채택.
+    # ObstacleTransition과 같은 진입 히스테리시스를 적용한다. 여기서 한 프레임짜리
+    # lattice 버스트로 빠져나가면 다음 루프에 다시 되돌아와 상태가 튄다.
     if (
         state_machine._check_overtaking_mode()
         or state_machine._check_static_overtaking_mode()
     ):
-        setattr(state_machine, counter_name, 0)
-        return StateType.OVERTAKE, StateType.OVERTAKE
+        state_machine.overtake_entry_count += 1
+        if state_machine.overtake_entry_count >= state_machine.overtake_entry_ticks:
+            setattr(state_machine, counter_name, 0)
+            return StateType.OVERTAKE, StateType.OVERTAKE
+    else:
+        state_machine.overtake_entry_count = 0
 
     if close_to_raceline and gb_free:
         setattr(state_machine, counter_name, 0)
@@ -158,7 +176,11 @@ def _IndependentOnlyTransition(state_machine, counter_name):
         setattr(state_machine, counter_name, 0)
         return StateType.RECOVERY, StateType.RECOVERY
 
-    state = StateType.OFFROADONLY if counter_name == "offroad_counter" else StateType.FTGONLY
+    state = {
+        "ftg_counter": StateType.FTGONLY,
+        "offroad_counter": StateType.OFFROADONLY,
+        "dwa_counter": StateType.DWAONLY,
+    }[counter_name]
     return state, state
 
 '''
@@ -225,7 +247,17 @@ def ObstacleTransition(state_machine: "StateMachine", close_to_raceline) -> Tupl
         if recovery_availability and state_machine._check_free_frenet(state_machine.cur_recovery_wpnts):
             return StateType.RECOVERY, StateType.RECOVERY
 
+    # Entry-side hysteresis: require the overtake check to hold for several
+    # consecutive loops. The lattice planner can publish a valid path for one
+    # 0.1 s freshness window and go silent again when the free corridor sits on
+    # the hard-clearance threshold; without this the machine takes OVERTAKE on
+    # every such burst and drops back to TRAILING for a single loop.
     if can_overtake:
+        state_machine.overtake_entry_count += 1
+    else:
+        state_machine.overtake_entry_count = 0
+
+    if can_overtake and state_machine.overtake_entry_count >= state_machine.overtake_entry_ticks:
         return StateType.OVERTAKE, StateType.OVERTAKE
     else:
         if (

@@ -195,6 +195,12 @@ class ObstacleSD:
     ttl = None
     min_std = None
     max_std = None
+    # Rolling window for the published size of a *static* obstacle. The L-shape
+    # fit sees a different face of the same cone at every viewing angle, so the
+    # raw per-frame size swings across the whole detect clamp (0.3..0.6 m) and
+    # d_left/d_right, derived from it, swing with it. Downstream hard-clearance
+    # checks then flip free/blocked frame to frame. 1 disables the filter.
+    size_median_window = 1
 
     def __init__(self, id, s_meas, d_meas, lap, size, isVisible):
         """
@@ -213,6 +219,7 @@ class ObstacleSD:
         self.current_lap = lap
         self.staticFlag = None
         self.size = size
+        self.measurments_size = [size]
         self.nb_detection = 0
         self.isVisible = isVisible
 
@@ -362,6 +369,7 @@ class StaticDynamic(Node):
         self.ttl_dynamic = self._get_param("ttl_dynamic")
         self.ttl_static = self._get_param("ttl_static")
         self.vs_reset = self._get_param("vs_reset")
+        self.size_median_window = self._get_param("size_median_window", 15)
 
         # dyn params sub
         Opponent_state.ttl = self.ttl_dynamic
@@ -370,6 +378,7 @@ class StaticDynamic(Node):
         ObstacleSD.min_nb_meas = self.min_nb_meas
         ObstacleSD.min_std = self.min_std
         ObstacleSD.max_std = self.max_std
+        ObstacleSD.size_median_window = max(1, int(self.size_median_window))
         self.vs_reset = self.vs_reset
 
         # save-back path (ROS1 dynamic_tracker_server wrote both detect + tracking
@@ -425,6 +434,7 @@ class StaticDynamic(Node):
         self.debug_mode = self._get_param("debug_mode")
         self.publish_static = self._get_param("publish_static")
         self.noMemoryMode = self._get_param("noMemoryMode")
+        self.size_median_window = self._get_param("size_median_window", 15)
 
         Opponent_state.ttl = self.ttl_dynamic
         Opponent_state.ratio_to_glob_path = self.ratio_to_glob_path
@@ -433,6 +443,7 @@ class StaticDynamic(Node):
         ObstacleSD.min_nb_meas = self.min_nb_meas
         ObstacleSD.min_std = self.min_std
         ObstacleSD.max_std = self.max_std
+        ObstacleSD.size_median_window = max(1, int(self.size_median_window))
 
         obstacle_params = [ObstacleSD.ttl, ObstacleSD.min_nb_meas, ObstacleSD.min_std, ObstacleSD.max_std]
         print(f'[Tracking] Dynamic reconf triggered new tracking params: Tracking TTL: {Opponent_state.ttl}, Ratio to glob path: {Opponent_state.ratio_to_glob_path}\n'
@@ -608,8 +619,21 @@ class StaticDynamic(Node):
         tracked_obstacle.isInFront = True
         tracked_obstacle.isVisible = True
         tracked_obstacle.current_lap = self.current_lap
-        tracked_obstacle.size = meas_obstacle.size
+        tracked_obstacle.measurments_size.append(meas_obstacle.size)
+        if len(tracked_obstacle.measurments_size) > 2 * ObstacleSD.size_median_window:
+            tracked_obstacle.measurments_size = (
+                tracked_obstacle.measurments_size[-ObstacleSD.size_median_window:]
+            )
         tracked_obstacle.isStatic(self.track_length)
+        # A dynamic obstacle keeps the raw size (a car really does change its
+        # apparent extent); only a static one gets the median, and it is applied
+        # after isStatic() so the flag used here is this frame's classification.
+        if tracked_obstacle.staticFlag and ObstacleSD.size_median_window > 1:
+            tracked_obstacle.size = float(np.median(
+                tracked_obstacle.measurments_size[-ObstacleSD.size_median_window:]
+            ))
+        else:
+            tracked_obstacle.size = meas_obstacle.size
         tracked_obstacle.ttl = ObstacleSD.ttl
 
         return tracked_obstacle

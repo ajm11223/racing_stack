@@ -680,6 +680,18 @@ Visualization Manager:
                     Reliability Policy: Reliable
                     Value: /planner/avoidance/lattice_candidates
                   Value: true
+                - Class: rviz_default_plugins/MarkerArray
+                  Enabled: true
+                  Name: LiDAR track bounds (left/right)
+                  Namespaces:
+                    {}
+                  Topic:
+                    Depth: 5
+                    Durability Policy: Volatile
+                    History Policy: Keep Last
+                    Reliability Policy: Reliable
+                    Value: /planner/avoidance/lidar_track_bounds
+                  Value: true
               Enabled: true
               Name: Static
             - Class: rviz_common/Group
@@ -808,6 +820,35 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /trailing_opponent_marker
           Value: true
+        - Class: rviz_common/Group
+          Displays:
+            - Class: rviz_default_plugins/MarkerArray
+              Enabled: true
+              Name: Candidates
+              Namespaces:
+                {}
+              Topic:
+                Depth: 5
+                Durability Policy: Volatile
+                History Policy: Keep Last
+                Reliability Policy: Reliable
+                Value: /offroad_planner/candidates
+              Value: true
+            - Class: rviz_default_plugins/Marker
+              Enabled: true
+              Name: Selected
+              Namespaces:
+                {}
+              Topic:
+                Depth: 5
+                Durability Policy: Volatile
+                Filter size: 10
+                History Policy: Keep Last
+                Reliability Policy: Reliable
+                Value: /offroad_planner/selected
+              Value: true
+          Enabled: true
+          Name: Offroad planner
         - Class: rviz_default_plugins/Marker
           Enabled: true
           Name: FTG best point

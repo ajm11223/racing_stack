@@ -32,8 +32,7 @@ class StateMachineParams:
         "emergency_break_horizon",
         "ftg_speed_mps",
         "ftg_timer_sec",
-        "offroad_speed_mps",
-        "offroad_timer_sec",
+        "offroad_distance_m",
         "gb_ego_width_m",
         "gb_horizon_m",
         "interest_horizon_m",
@@ -246,6 +245,18 @@ class StateMachineParams:
         self.overtaking_ttl_sec: float = node.get_parameter("overtaking_ttl_sec").value
 
         self._declare(
+            "overtake_entry_ticks", 3,
+            ParameterDescriptor(
+                description="Consecutive loops the overtake check must hold before "
+                            "entering OVERTAKE. 1 restores the old no-hysteresis "
+                            "behaviour. Leaving OVERTAKE is unaffected.",
+                type=ParameterType.PARAMETER_INTEGER,
+                integer_range=[IntegerRange(from_value=1, to_value=20, step=1)],
+            ),
+        )
+        self.overtake_entry_ticks: int = node.get_parameter("overtake_entry_ticks").value
+
+        self._declare(
             "ftg_speed_mps", 0.1,
             ParameterDescriptor(
                 description="Speed threshold below which ftg counter is incremented [mps]",
@@ -269,27 +280,20 @@ class StateMachineParams:
         self.ftg_active: bool = node.get_parameter("ftg_active").value
 
         self._declare(
-            "offroad_speed_mps", 1.0,
+            "offroad_distance_m", 3.0,
             ParameterDescriptor(
-                description="Speed threshold below which OFFROADONLY counts up [mps]",
+                description="Static trailing-target face distance that immediately triggers OFFROADONLY [m]",
                 type=ParameterType.PARAMETER_DOUBLE,
-                floating_point_range=[FloatingPointRange(from_value=0.1, to_value=3.0, step=0.05)],
+                floating_point_range=[FloatingPointRange(from_value=0.5, to_value=10.0, step=0.1)],
             ),
         )
-        self.offroad_speed_mps: float = node.get_parameter("offroad_speed_mps").value
-
-        self._declare(
-            "offroad_timer_sec", 0.5,
-            ParameterDescriptor(
-                description="Low-speed duration that triggers OFFROADONLY [s]",
-                type=ParameterType.PARAMETER_DOUBLE,
-                floating_point_range=[FloatingPointRange(from_value=0.1, to_value=7.0, step=0.05)],
-            ),
-        )
-        self.offroad_timer_sec: float = node.get_parameter("offroad_timer_sec").value
+        self.offroad_distance_m: float = node.get_parameter("offroad_distance_m").value
 
         self._declare("offroad_active", False)
         self.offroad_active: bool = node.get_parameter("offroad_active").value
+
+        self._declare("dwa_active", False)
+        self.dwa_active: bool = node.get_parameter("dwa_active").value
 
         self._declare("force_GBTRACK", False)
         self.force_GBTRACK: bool = node.get_parameter("force_GBTRACK").value
@@ -341,12 +345,19 @@ class StateMachineParams:
             elif name == "overtaking_ttl_sec":
                 self.overtaking_ttl_sec = value
                 self.node.overtaking_ttl_count_threshold = int(value * self.rate_hz)
+            elif name == "overtake_entry_ticks":
+                self.overtake_entry_ticks = value
+                self.node.overtake_entry_ticks = max(1, int(value))
+                self.node.overtake_entry_count = 0
             elif name == "ftg_active":
                 self.ftg_active = value
                 self.node.ftg_disabled = not value
             elif name == "offroad_active":
                 self.offroad_active = value
                 self.node.offroad_disabled = not value
+            elif name == "dwa_active":
+                self.dwa_active = value
+                self.node.dwa_disabled = not value
             elif name == "save_start_traj":
                 # momentary: act + reset in the node timer (not inside this on-set cb)
                 if value:

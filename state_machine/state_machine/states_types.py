@@ -7,6 +7,7 @@ class StateType(enum.Enum):
     OVERTAKE = 'OVERTAKE'
     FTGONLY = 'FTGONLY'
     OFFROADONLY = 'OFFROADONLY'
+    DWAONLY = 'DWAONLY'
     RECOVERY = 'RECOVERY'
     ATTACK = 'ATTACK'
     START = 'START'

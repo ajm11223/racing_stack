@@ -20,14 +20,14 @@ state_machine:
     splini_hyst_timer_sec: 0.7
     splini_ttl: 2.0
     pred_splini_ttl: 2.0
-    overtaking_ttl_sec: 1.0
+    overtaking_ttl_sec: 2.0
     overtake_min_closing_mps: 2.5
-    ftg_speed_mps: 1.0  #기존 0.1
-    ftg_timer_sec: 0.5  #기존 3.0
+    ftg_speed_mps: 2.0  #기존 0.1
+    ftg_timer_sec: 0.01  #기존 3.0
     ftg_active: false
-    offroad_speed_mps: 1.0
-    offroad_timer_sec: 0.5
+    offroad_distance_m: 4.0      # 차량에서 정적 trailing target의 앞면(s_start)까지 진입 거리 [m]
     offroad_active: true
+    dwa_active: false             # OFFROAD와 같은 조건에서 DWAONLY 진입; 둘 다 true이면 DWA 우선
     force_GBTRACK: false
     use_force_trailing: false
     save_params: false

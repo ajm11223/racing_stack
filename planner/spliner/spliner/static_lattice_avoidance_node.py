@@ -19,8 +19,11 @@ import numpy as np
 import rclpy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.parameter import Parameter
+from rclpy.qos import qos_profile_sensor_data
 from scipy.interpolate import CubicHermiteSpline
+from scipy.spatial import cKDTree
 from geometry_msgs.msg import Point
+from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker, MarkerArray
 
 from f110_msgs.msg import (
@@ -101,6 +104,35 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         self.lattice_max_curvature = 1.28
         self.lattice_consistency_scale = 0.50
         self.lattice_use_legacy_output = False
+        self.lattice_speed_from_curvature = True
+        self.lattice_max_lat_acc = 4.5
+        self.lattice_max_lon_dec = 5.0
+        self.lattice_min_speed = 1.5
+        # LiDAR bounds replace the corresponding global side when observed.
+        # A side with no usable return falls back to the global corridor.
+        self.lattice_use_lidar_bounds = False
+        self.lattice_lidar_scan_timeout = 0.20
+        self.lattice_lidar_min_range = 0.05
+        self.lattice_lidar_max_range = 8.0
+        self.lattice_lidar_offset_x = 0.0
+        self.lattice_lidar_offset_y = 0.0
+        self.lattice_lidar_yaw = 0.0
+        self.lattice_lidar_wall_band = 0.80
+        self.lattice_lidar_s_window = 0.35
+        self.lattice_lidar_min_wall_points = 2
+        self.lattice_lidar_bound_padding = 0.05
+        self.lattice_lidar_path_clearance = 0.25
+        self.latest_scan = None
+        self.latest_scan_received_sec = None
+        self.lidar_left_s = np.asarray([], dtype=float)
+        self.lidar_left_d = np.asarray([], dtype=float)
+        self.lidar_right_s = np.asarray([], dtype=float)
+        self.lidar_right_d = np.asarray([], dtype=float)
+        self.lidar_left_xy = np.empty((0, 2), dtype=float)
+        self.lidar_right_xy = np.empty((0, 2), dtype=float)
+        self.lidar_path_points_xy = np.empty((0, 2), dtype=float)
+        self.lidar_path_tree = None
+        self._lidar_interval_cache = {}
         self.last_candidate_layers: List[List[LatticeApexCandidate]] = []
         self.last_candidate_combinations: List[Tuple[LatticeApexCandidate, ...]] = []
         self.last_generated_paths: List[LatticePathCandidate] = []
@@ -170,11 +202,48 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         self.lattice_use_legacy_output = bool(
             self.get_parameter("lattice_use_legacy_output").value
         )
+        self.lattice_speed_from_curvature = bool(
+            self.get_parameter("lattice_speed_from_curvature").value
+        )
+        self.lattice_max_lat_acc = max(
+            1.0e-2, float(self.get_parameter("lattice_max_lat_acc_mps2").value)
+        )
+        self.lattice_max_lon_dec = max(
+            1.0e-2, float(self.get_parameter("lattice_max_lon_dec_mps2").value)
+        )
+        self.lattice_min_speed = max(
+            0.0, float(self.get_parameter("lattice_min_speed_mps").value)
+        )
+        self.dyn_param_cb(self.get_parameters([
+            "lattice_use_lidar_bounds",
+            "lattice_lidar_scan_timeout_s",
+            "lattice_lidar_min_range_m",
+            "lattice_lidar_max_range_m",
+            "lattice_lidar_offset_x_m",
+            "lattice_lidar_offset_y_m",
+            "lattice_lidar_yaw_rad",
+            "lattice_lidar_wall_band_m",
+            "lattice_lidar_s_window_m",
+            "lattice_lidar_min_wall_points",
+            "lattice_lidar_bound_padding_m",
+            "lattice_lidar_path_clearance_m",
+        ]))
 
         self.lattice_candidates_pub = self.create_publisher(
             MarkerArray,
             "/planner/avoidance/lattice_candidates",
             10,
+        )
+        self.lidar_bounds_pub = self.create_publisher(
+            MarkerArray,
+            "/planner/avoidance/lidar_track_bounds",
+            10,
+        )
+        self.create_subscription(
+            LaserScan,
+            "/scan",
+            self.scan_cb,
+            qos_profile_sensor_data,
         )
         # BehaviorStrategy currently exposes only the closest overtaking target.
         # Subscribe to the tracking array as well so one planning pass can build
@@ -208,6 +277,22 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         self.declare_parameter("lattice_max_curvature", 1.28)
         self.declare_parameter("lattice_consistency_scale", 0.50)
         self.declare_parameter("lattice_use_legacy_output", False)
+        self.declare_parameter("lattice_speed_from_curvature", True)
+        self.declare_parameter("lattice_max_lat_acc_mps2", 4.5)
+        self.declare_parameter("lattice_max_lon_dec_mps2", 5.0)
+        self.declare_parameter("lattice_min_speed_mps", 1.5)
+        self.declare_parameter("lattice_use_lidar_bounds", False)
+        self.declare_parameter("lattice_lidar_scan_timeout_s", 0.20)
+        self.declare_parameter("lattice_lidar_min_range_m", 0.05)
+        self.declare_parameter("lattice_lidar_max_range_m", 8.0)
+        self.declare_parameter("lattice_lidar_offset_x_m", 0.0)
+        self.declare_parameter("lattice_lidar_offset_y_m", 0.0)
+        self.declare_parameter("lattice_lidar_yaw_rad", 0.0)
+        self.declare_parameter("lattice_lidar_wall_band_m", 0.80)
+        self.declare_parameter("lattice_lidar_s_window_m", 0.35)
+        self.declare_parameter("lattice_lidar_min_wall_points", 2)
+        self.declare_parameter("lattice_lidar_bound_padding_m", 0.05)
+        self.declare_parameter("lattice_lidar_path_clearance_m", 0.25)
 
     def dyn_param_cb(self, params: List[Parameter]) -> SetParametersResult:
         """Apply lattice sampling updates and preserve legacy parameter handling."""
@@ -248,7 +333,55 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                 )
             elif param.name == "lattice_use_legacy_output":
                 self.lattice_use_legacy_output = bool(param.value)
+            elif param.name == "lattice_speed_from_curvature":
+                self.lattice_speed_from_curvature = bool(param.value)
+            elif param.name == "lattice_max_lat_acc_mps2":
+                self.lattice_max_lat_acc = max(1.0e-2, float(param.value))
+            elif param.name == "lattice_max_lon_dec_mps2":
+                self.lattice_max_lon_dec = max(1.0e-2, float(param.value))
+            elif param.name == "lattice_min_speed_mps":
+                self.lattice_min_speed = max(0.0, float(param.value))
+            elif (
+                param.name == "lattice_use_lidar_bounds"
+                or param.name.startswith("lattice_lidar_")
+            ):
+                self._apply_lidar_parameter(param.name, param.value)
         return super().dyn_param_cb(params)
+
+    def _apply_lidar_parameter(self, name: str, value) -> None:
+        """Validate one live LiDAR-bound parameter and clear derived caches."""
+        if name == "lattice_use_lidar_bounds":
+            self.lattice_use_lidar_bounds = bool(value)
+        elif name == "lattice_lidar_scan_timeout_s":
+            self.lattice_lidar_scan_timeout = max(0.01, float(value))
+        elif name == "lattice_lidar_min_range_m":
+            self.lattice_lidar_min_range = max(0.0, float(value))
+            self.lattice_lidar_max_range = max(
+                self.lattice_lidar_max_range,
+                self.lattice_lidar_min_range + 0.01,
+            )
+        elif name == "lattice_lidar_max_range_m":
+            self.lattice_lidar_max_range = max(
+                self.lattice_lidar_min_range + 0.01,
+                float(value),
+            )
+        elif name == "lattice_lidar_offset_x_m":
+            self.lattice_lidar_offset_x = float(value)
+        elif name == "lattice_lidar_offset_y_m":
+            self.lattice_lidar_offset_y = float(value)
+        elif name == "lattice_lidar_yaw_rad":
+            self.lattice_lidar_yaw = float(value)
+        elif name == "lattice_lidar_wall_band_m":
+            self.lattice_lidar_wall_band = max(0.05, float(value))
+        elif name == "lattice_lidar_s_window_m":
+            self.lattice_lidar_s_window = max(0.05, float(value))
+        elif name == "lattice_lidar_min_wall_points":
+            self.lattice_lidar_min_wall_points = max(1, int(value))
+        elif name == "lattice_lidar_bound_padding_m":
+            self.lattice_lidar_bound_padding = max(0.0, float(value))
+        elif name == "lattice_lidar_path_clearance_m":
+            self.lattice_lidar_path_clearance = max(0.0, float(value))
+        self._lidar_interval_cache = {}
 
     def behavior_cb(self, data: BehaviorStrategy):
         """Keep strategy targets as the authoritative active-obstacle seed."""
@@ -273,12 +406,251 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
             if obs.is_static
         ]
 
+    def scan_cb(self, data: LaserScan):
+        """Cache the newest scan; conversion is synchronized in the planning loop."""
+        self.latest_scan = data
+        self.latest_scan_received_sec = (
+            self.get_clock().now().nanoseconds * 1.0e-9
+        )
+
+    def _clear_lidar_track_bounds(self) -> None:
+        self.lidar_left_s = np.asarray([], dtype=float)
+        self.lidar_left_d = np.asarray([], dtype=float)
+        self.lidar_right_s = np.asarray([], dtype=float)
+        self.lidar_right_d = np.asarray([], dtype=float)
+        self.lidar_left_xy = np.empty((0, 2), dtype=float)
+        self.lidar_right_xy = np.empty((0, 2), dtype=float)
+        self.lidar_path_points_xy = np.empty((0, 2), dtype=float)
+        self.lidar_path_tree = None
+        self._lidar_interval_cache = {}
+
+    def _refresh_lidar_track_bounds(self, gb_wpnts) -> bool:
+        """Convert a fresh scan into conservative local Frenet wall samples."""
+        self._clear_lidar_track_bounds()
+        if not self.lattice_use_lidar_bounds or self.latest_scan is None:
+            return False
+        if self.latest_scan_received_sec is None:
+            return False
+        now_sec = self.get_clock().now().nanoseconds * 1.0e-9
+        if now_sec - self.latest_scan_received_sec > self.lattice_lidar_scan_timeout:
+            return False
+        if (
+            self.cur_x is None
+            or self.cur_y is None
+            or self.cur_yaw is None
+            or self.cur_s is None
+            or self.gb_max_s is None
+            or getattr(self, "converter", None) is None
+            or len(gb_wpnts) < 2
+        ):
+            return False
+
+        scan = self.latest_scan
+        ranges = np.asarray(scan.ranges, dtype=float).reshape(-1)
+        angles = (
+            float(scan.angle_min)
+            + np.arange(ranges.size, dtype=float) * float(scan.angle_increment)
+        )
+        scan_min_range = float(getattr(scan, "range_min", 0.0))
+        scan_max_range = float(getattr(scan, "range_max", math.inf))
+        minimum_range = max(self.lattice_lidar_min_range, scan_min_range)
+        maximum_range = min(self.lattice_lidar_max_range, scan_max_range)
+        valid = (
+            np.isfinite(ranges)
+            & (ranges >= minimum_range)
+            & (ranges < maximum_range)
+        )
+        if not np.any(valid):
+            return False
+
+        scan_x = ranges[valid] * np.cos(angles[valid])
+        scan_y = ranges[valid] * np.sin(angles[valid])
+        lidar_cos = math.cos(self.lattice_lidar_yaw)
+        lidar_sin = math.sin(self.lattice_lidar_yaw)
+        base_x = (
+            self.lattice_lidar_offset_x
+            + lidar_cos * scan_x
+            - lidar_sin * scan_y
+        )
+        base_y = (
+            self.lattice_lidar_offset_y
+            + lidar_sin * scan_x
+            + lidar_cos * scan_y
+        )
+        yaw_cos = math.cos(float(self.cur_yaw))
+        yaw_sin = math.sin(float(self.cur_yaw))
+        map_x = float(self.cur_x) + yaw_cos * base_x - yaw_sin * base_y
+        map_y = float(self.cur_y) + yaw_sin * base_x + yaw_cos * base_y
+
+        try:
+            scan_s, scan_d = self.converter.get_frenet(map_x, map_y)
+        except (RuntimeError, TypeError, ValueError, FloatingPointError):
+            return False
+        scan_s = np.asarray(scan_s, dtype=float).reshape(-1)
+        scan_d = np.asarray(scan_d, dtype=float).reshape(-1)
+        if scan_s.size != map_x.size or scan_d.size != map_x.size:
+            return False
+
+        signed_forward = (
+            scan_s - float(self.cur_s) + self.gb_max_s / 2.0
+        ) % self.gb_max_s - self.gb_max_s / 2.0
+        horizon = min(
+            float(self.lattice_obstacle_horizon),
+            float(self.lattice_lidar_max_range) + 0.5,
+        )
+        local = (
+            np.isfinite(scan_s)
+            & np.isfinite(scan_d)
+            & (signed_forward >= -0.50)
+            & (signed_forward <= horizon)
+        )
+        if not np.any(local):
+            return False
+
+        scan_s = scan_s[local] % self.gb_max_s
+        scan_d = scan_d[local]
+        points_xy = np.column_stack((map_x[local], map_y[local]))
+        self.lidar_path_points_xy = points_xy
+        self.lidar_path_tree = cKDTree(points_xy)
+
+        wpnt_dist = float(gb_wpnts[1].s_m - gb_wpnts[0].s_m)
+        if not math.isfinite(wpnt_dist) or wpnt_dist <= 0.0:
+            self._clear_lidar_track_bounds()
+            return False
+        indices = np.round(scan_s / wpnt_dist).astype(int) % len(gb_wpnts)
+        fixed_left = np.asarray(
+            [float(gb_wpnts[index].d_left) for index in indices],
+            dtype=float,
+        )
+        fixed_right = np.asarray(
+            [-float(gb_wpnts[index].d_right) for index in indices],
+            dtype=float,
+        )
+        band = float(self.lattice_lidar_wall_band)
+        left_mask = (
+            (scan_d > 0.0)
+            & np.isfinite(fixed_left)
+            & (np.abs(scan_d - fixed_left) <= band)
+        )
+        right_mask = (
+            (scan_d < 0.0)
+            & np.isfinite(fixed_right)
+            & (np.abs(scan_d - fixed_right) <= band)
+        )
+        self.lidar_left_s = scan_s[left_mask]
+        self.lidar_left_d = scan_d[left_mask]
+        self.lidar_left_xy = points_xy[left_mask]
+        self.lidar_right_s = scan_s[right_mask]
+        self.lidar_right_d = scan_d[right_mask]
+        self.lidar_right_xy = points_xy[right_mask]
+        return bool(np.any(left_mask) or np.any(right_mask))
+
+    def _effective_track_interval(
+        self,
+        s_value: float,
+        fixed_min: float,
+        fixed_max: float,
+    ) -> Tuple[float, float]:
+        """Return measured LiDAR bounds, falling back per side to global widths."""
+        if (
+            not getattr(self, "lattice_use_lidar_bounds", False)
+            or getattr(self, "gb_max_s", None) is None
+        ):
+            return float(fixed_min), float(fixed_max)
+
+        cache_scale = max(float(self.lattice_lidar_s_window), 0.05)
+        key = (
+            int(round((float(s_value) % self.gb_max_s) / cache_scale)),
+            round(float(fixed_min), 3),
+            round(float(fixed_max), 3),
+        )
+        cached = self._lidar_interval_cache.get(key)
+        if cached is not None:
+            return cached
+
+        lower = float(fixed_min)
+        upper = float(fixed_max)
+        padding = float(self.lattice_lidar_bound_padding)
+        minimum_points = int(self.lattice_lidar_min_wall_points)
+
+        if self.lidar_left_s.size:
+            left_delta = (
+                self.lidar_left_s - float(s_value) + self.gb_max_s / 2.0
+            ) % self.gb_max_s - self.gb_max_s / 2.0
+            left_values = self.lidar_left_d[
+                np.abs(left_delta) <= self.lattice_lidar_s_window
+            ]
+            if left_values.size >= minimum_points:
+                # Use the inner-side quantile: an approaching wall corner must
+                # shrink the corridor before the rest of the wall catches up.
+                measured_left = float(np.quantile(left_values, 0.20)) - padding
+                upper = measured_left
+
+        if self.lidar_right_s.size:
+            right_delta = (
+                self.lidar_right_s - float(s_value) + self.gb_max_s / 2.0
+            ) % self.gb_max_s - self.gb_max_s / 2.0
+            right_values = self.lidar_right_d[
+                np.abs(right_delta) <= self.lattice_lidar_s_window
+            ]
+            if right_values.size >= minimum_points:
+                measured_right = float(np.quantile(right_values, 0.80)) + padding
+                lower = measured_right
+
+        result = (float(lower), float(upper))
+        self._lidar_interval_cache[key] = result
+        return result
+
+    def _lidar_path_residual_clearance(self, path: LatticePathCandidate) -> float:
+        """Distance from a completed path to the current raw scan safety circle."""
+        if (
+            not getattr(self, "lattice_use_lidar_bounds", False)
+            or getattr(self, "lidar_path_tree", None) is None
+            or not hasattr(path, "xy")
+        ):
+            return math.inf
+        xy = np.asarray(path.xy, dtype=float)
+        if xy.ndim != 2 or xy.shape[1] != 2 or xy.size == 0:
+            return -math.inf
+        distances, _ = self.lidar_path_tree.query(xy, k=1)
+        return float(np.min(distances) - self.lattice_lidar_path_clearance)
+
+    def _lidar_bound_markers(self) -> MarkerArray:
+        markers = self._delete_all_markers()
+        stamp = self.get_clock().now().to_msg()
+        for marker_id, points, red, green, blue in (
+            (1, self.lidar_left_xy, 1.0, 0.1, 1.0),
+            (2, self.lidar_right_xy, 0.1, 1.0, 1.0),
+        ):
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = stamp
+            marker.ns = "lidar_track_bounds"
+            marker.id = marker_id
+            marker.type = Marker.POINTS
+            marker.action = Marker.ADD
+            marker.scale.x = 0.05
+            marker.scale.y = 0.05
+            marker.color.a = 1.0
+            marker.color.r = red
+            marker.color.g = green
+            marker.color.b = blue
+            marker.pose.orientation.w = 1.0
+            marker.points = [
+                Point(x=float(x), y=float(y), z=0.03)
+                for x, y in points
+            ]
+            markers.markers.append(marker)
+        return markers
+
     def loop(self):
         """Build and visualize lattice layers, then publish the integration output."""
         if self.measuring:
             start = time.perf_counter()
 
         gb_wpnts = self.gb_scaled_wpnts.wpnts
+        self._refresh_lidar_track_bounds(gb_wpnts)
+        self.lidar_bounds_pub.publish(self._lidar_bound_markers())
         wpnts = OTWpntArray()
         wpnts.header.stamp = self.get_clock().now().to_msg()
         wpnts.header.frame_id = "map"
@@ -593,8 +965,13 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         for obstacle in obstacles:
             obs_idx = int(round(obstacle.s_center / wpnt_dist)) % len(gb_wpnts)
             gb_wp = gb_wpnts[obs_idx]
-            track_mins.append(-float(gb_wp.d_right))
-            track_maxs.append(float(gb_wp.d_left))
+            effective_min, effective_max = self._effective_track_interval(
+                float(obstacle.s_center),
+                -float(gb_wp.d_right),
+                float(gb_wp.d_left),
+            )
+            track_mins.append(effective_min)
+            track_maxs.append(effective_max)
         track_min = max(track_mins)
         track_max = min(track_maxs)
         if not (math.isfinite(track_min) and math.isfinite(track_max)):
@@ -649,8 +1026,11 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         gb_wp,
     ) -> List[LatticeApexCandidate]:
         """Subtract the raw obstacle interval from the raw track interval."""
-        track_min = -float(gb_wp.d_right)
-        track_max = float(gb_wp.d_left)
+        track_min, track_max = self._effective_track_interval(
+            float(obs.s_center),
+            -float(gb_wp.d_right),
+            float(gb_wp.d_left),
+        )
         if not (math.isfinite(track_min) and math.isfinite(track_max)):
             return []
         if track_max <= track_min:
@@ -780,7 +1160,10 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
                     constraint_obstacles,
                 )
                 if not collisions:
-                    collision_free.append(path)
+                    if self._lidar_path_residual_clearance(
+                        collision_path
+                    ) >= 0.0:
+                        collision_free.append(path)
                     continue
 
                 planning_keys = {
@@ -1213,13 +1596,22 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         track_margin = self.lattice_track_boundary_margin
         obstacle_margin = self.lattice_obstacle_boundary_margin
         indices = np.round(path.s / wpnt_dist).astype(int) % len(gb_wpnts)
+        track_intervals = [
+            self._effective_track_interval(
+                float(s_value),
+                -float(gb_wpnts[index].d_right),
+                float(gb_wpnts[index].d_left),
+            )
+            for s_value, index in zip(path.s, indices)
+        ]
         track_min = np.asarray(
-            [-float(gb_wpnts[index].d_right) + track_margin for index in indices]
+            [lower + track_margin for lower, _ in track_intervals]
         )
         track_max = np.asarray(
-            [float(gb_wpnts[index].d_left) - track_margin for index in indices]
+            [upper - track_margin for _, upper in track_intervals]
         )
         minimum = float(np.min(np.minimum(path.d - track_min, track_max - path.d)))
+        minimum = min(minimum, self._lidar_path_residual_clearance(path))
 
         for obstacle in obstacles:
             obs_min, obs_max = self._obstacle_lateral_bounds(obstacle)
@@ -1293,6 +1685,68 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
             1.0,
         ))
 
+    def _curvature_limited_speeds(self, gb_speeds, gb_kappa, curvature, xy):
+        """Cap the avoidance path's speed by its own curvature, then make the
+        result reachable by braking.
+
+        The raceline velocity profile was optimised for the raceline's curvature.
+        An avoidance spline is strictly sharper than the line it replaces, so
+        copying that profile onto it demands lateral acceleration the tyres
+        cannot deliver -- on a narrow section the car simply runs wide.
+
+        The lateral budget is taken from the raceline itself
+        (``v_gb^2 * |kappa_gb|``, floored at the configured value) rather than
+        from the configured value alone. On this stack the raceline profile
+        already exceeds ggv's ay_max by a large factor in places, so a fixed
+        budget would cut speed wherever the *raceline* is tight, obstacle or
+        not -- which is the speed-sector behaviour this is meant to avoid.
+        Calibrating against the raceline makes the cap a no-op wherever the
+        path curvature matches the raceline's, so only the extra curvature the
+        avoidance adds costs anything.
+
+        This is deliberately not a track-wide speed sector: nothing is published
+        when there is no obstacle, so a clean lap keeps the full raceline
+        profile.
+
+        Two passes:
+          1. pointwise grip limit  v <= sqrt(a_budget / |kappa|)
+          2. backward pass         v[i] <= sqrt(v[i+1]^2 + 2*a_dec*ds)
+        Pass 2 is what makes pass 1 useful. A cap applied only at the apex is
+        decorative: the car arrives there still carrying raceline speed because
+        nothing told it to start braking earlier.
+        """
+        gb_speeds = np.asarray(gb_speeds, dtype=float)
+        if not self.lattice_speed_from_curvature or gb_speeds.size == 0:
+            return gb_speeds
+
+        # Clip at the existing hard curvature limit: anything above it would
+        # already have been rejected, so a numerical spike from the finite
+        # difference in _path_geometry cannot collapse the whole profile.
+        kappa = np.minimum(
+            np.abs(np.asarray(curvature, dtype=float)),
+            self.lattice_max_curvature,
+        )
+        budget = np.maximum(
+            self.lattice_max_lat_acc,
+            gb_speeds ** 2 * np.abs(np.asarray(gb_kappa, dtype=float)),
+        )
+        grip = np.sqrt(budget / np.maximum(kappa, 1.0e-3))
+        speeds = np.minimum(gb_speeds, np.maximum(grip, self.lattice_min_speed))
+
+        arc = self._path_arc_lengths(xy)
+        if arc.size != speeds.size:
+            return speeds
+        for i in range(speeds.size - 2, -1, -1):
+            ds = float(arc[i + 1] - arc[i])
+            if ds <= 0.0:
+                continue
+            reachable = math.sqrt(
+                speeds[i + 1] ** 2 + 2.0 * self.lattice_max_lon_dec * ds
+            )
+            if reachable < speeds[i]:
+                speeds[i] = reachable
+        return speeds
+
     def _selected_path_output(self, path: LatticePathCandidate, gb_wpnts):
         """Wrap the selected spline and a raceline tail as controller waypoints."""
         wpnts = OTWpntArray()
@@ -1306,9 +1760,17 @@ class StaticLatticeAvoidancePlanner(ObstacleSpliner):
         heading, curvature, _ = geometry
         wpnt_dist = float(gb_wpnts[1].s_m - gb_wpnts[0].s_m)
 
+        gb_idx = [
+            int(round(float(s) / wpnt_dist)) % len(gb_wpnts) for s in path.s
+        ]
+        gb_speeds = np.asarray([float(gb_wpnts[i].vx_mps) for i in gb_idx])
+        gb_kappa = np.asarray([float(gb_wpnts[i].kappa_radpm) for i in gb_idx])
+        speeds = self._curvature_limited_speeds(
+            gb_speeds, gb_kappa, curvature, path.xy
+        )
+
         for index, (s, d, xy) in enumerate(zip(path.s, path.d, path.xy)):
-            gb_index = int(round(float(s) / wpnt_dist)) % len(gb_wpnts)
-            velocity = float(gb_wpnts[gb_index].vx_mps)
+            velocity = float(speeds[index])
             wpnts.wpnts.append(self.xyv_to_wpnts(
                 s=float(s),
                 d=float(d),

@@ -25,6 +25,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from controller.combined.src.map_controller import Controller, parse_l1_sectors
 from controller.ftg.ftg import FTG
 from controller.offroad_planner.offroad_planner import OffRoadController, PlannerConfig
+from controller.dwa.ros_adapter import DWARosAdapter
 
 # MAP steering lookup lives in its own (optionally built) package; keep the
 # import soft so the controller still runs as pure PP when it is absent.
@@ -84,7 +85,8 @@ OFFROAD_PARAM_MAP = {
     'offroad_safety_weight': 'safety_weight',
     'offroad_smoothness_weight': 'smoothness_weight',
     'offroad_consistency_weight': 'consistency_weight',
-    'offroad_vehicle_length_m': 'vehicle_length_m',
+    'offroad_vehicle_front_m': 'vehicle_front_m',
+    'offroad_vehicle_rear_m': 'vehicle_rear_m',
     'offroad_vehicle_width_m': 'vehicle_width_m',
     'offroad_collision_margin_m': 'collision_margin_m',
     'offroad_road_margin_m': 'road_margin_m',
@@ -103,6 +105,10 @@ OFFROAD_PARAM_MAP = {
     'offroad_lookahead_min_m': 'lookahead_min_m',
     'offroad_lookahead_speed_gain_s': 'lookahead_speed_gain_s',
     'offroad_use_waypoint_bounds': 'use_waypoint_bounds',
+    'offroad_use_quintic_fan': 'use_quintic_fan',
+    'offroad_fan_steering_samples': 'fan_steering_samples',
+    'offroad_fan_goal_distance_m': 'fan_goal_distance_m',
+    'offroad_fan_goal_offset_m': 'fan_goal_offset_m',
 }
 
 # /controller/debug layout (measure:=true only). Matches controller_manager.py's
@@ -257,6 +263,7 @@ class ControllerManager(Node):
         self.offroad_controller = OffRoadController(PlannerConfig(**offroad_values))
         self.offroad_plan_rate_hz = float(self._get_param('offroad_plan_rate_hz', 20.0))
         self._offroad_last_plan_sec = None
+        self.dwa_adapter = DWARosAdapter(self)
 
         # Subscribers
         self.create_subscription(BehaviorStrategy, '/behavior_strategy', self.behavior_cb, 10)
@@ -325,6 +332,10 @@ class ControllerManager(Node):
             )
         except (TypeError, ValueError) as exc:
             self.get_logger().error(f"[{self.name}] OFFROAD base frame rejected: {exc}")
+        try:
+            self.dwa_adapter.set_reference_path(self.waypoints[:, 0], self.waypoints[:, 1])
+        except (TypeError, ValueError) as exc:
+            self.get_logger().error(f"[{self.name}] DWA reference path rejected: {exc}")
         # ROS1 read /global_republisher/track_length; derive from the waypoints' s_m
         self.track_length = data.wpnts[-1].s_m
         self.converter = FrenetConverter(self.waypoints[:, 0], self.waypoints[:, 1])
@@ -391,6 +402,8 @@ class ControllerManager(Node):
                     **{OFFROAD_PARAM_MAP[name]: param.value})
             elif name == 'offroad_plan_rate_hz':
                 self.offroad_plan_rate_hz = max(1.0, float(param.value))
+            elif self.dwa_adapter.update_parameter(name, param.value):
+                pass
             elif name == 'use_map':
                 # live MAP<->PP toggle; lazily (re)load the lookup on enable.
                 # Never rejects the set: on load failure it just stays on PP.
@@ -468,6 +481,7 @@ class ControllerManager(Node):
                 if self.has_parameter(p):
                     params[p] = self.get_parameter(p).value
             params['offroad_plan_rate_hz'] = float(self.offroad_plan_rate_hz)
+            params.update(self.dwa_adapter.yaml_parameters())
             params[OT_SECTORS_PARAM] = [float(v) for v in self.ot_sectors]
             params['use_map'] = bool(self.use_map)    # MAP steering lookup state
             params['LU_table'] = str(self.LU_table)
@@ -539,6 +553,8 @@ class ControllerManager(Node):
         if data.state == "OFFROADONLY" and self.state != "OFFROADONLY":
             self.offroad_controller.reset_history()
             self._offroad_last_plan_sec = None
+        if data.state == "DWAONLY" and self.state != "DWAONLY":
+            self.dwa_adapter.enter()
         self.state = data.state
 
     def imu_cb(self, data):
@@ -575,6 +591,8 @@ class ControllerManager(Node):
             speed, steering_angle = self.ftg_cycle()
         elif self.state == "OFFROADONLY":
             speed, steering_angle = self.offroad_cycle()
+        elif self.state == "DWAONLY":
+            speed, steering_angle = self.dwa_cycle()
         else:
             speed, acceleration, jerk, steering_angle = self.controller_cycle()
 
@@ -636,6 +654,11 @@ class ControllerManager(Node):
         self.get_logger().warning(f"[{self.name}] FTGONLY!!!")
         return speed, steer
 
+    def dwa_cycle(self):
+        return self.dwa_adapter.cycle(
+            self.scan, self.position_in_map, self.speed_now,
+        )
+
     def offroad_cycle(self):
         if self.scan is None:
             self.get_logger().error(
@@ -683,6 +706,7 @@ class ControllerManager(Node):
             marker = Marker()
             marker.header.frame_id = 'map'
             marker.header.stamp = stamp
+            marker.ns = candidate.generation_mode
             marker.id = candidate.index
             marker.type = Marker.LINE_STRIP
             marker.action = Marker.ADD
@@ -701,6 +725,7 @@ class ControllerManager(Node):
         marker = Marker()
         marker.header.frame_id = 'map'
         marker.header.stamp = stamp
+        marker.ns = chosen.generation_mode
         marker.id = 0
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD

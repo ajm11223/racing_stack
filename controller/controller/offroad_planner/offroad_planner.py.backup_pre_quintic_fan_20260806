@@ -4,8 +4,7 @@
 The implementation follows the paper's four online stages:
 
 1. localize the vehicle on an arc-length-parameterized cubic-spline base frame;
-2. generate curvilinear candidates using either the paper's cubic offsets or
-   a curvature fan of quintic paths that reunite with the base frame;
+2. generate cubic lateral-offset candidates in curvilinear coordinates;
 3. reject nonholonomic/colliding candidates and evaluate safety, curvature and
    path-consistency costs (equations 14--18);
 4. choose the lowest-cost free path, or the path with the longest free length
@@ -15,10 +14,7 @@ The implementation follows the paper's four online stages:
 The paper deliberately separates planning from vehicle control and does not
 specify a path-tracking law. ``OffRoadController`` adds a small pure-pursuit
 adapter so this planner can occupy the same direct ``(speed, steering)`` seam as
-FTG. The optional quintic fan is an extension of the paper algorithm: every
-candidate starts at the measured vehicle pose, fans out with a different
-bounded initial steering angle, and reaches a common terminal pose parallel to
-the base frame.
+FTG without changing the paper algorithm itself.
 """
 
 from __future__ import annotations
@@ -79,10 +75,6 @@ class PlannerConfig:
     lookahead_min_m: float = 0.60
     lookahead_speed_gain_s: float = 0.20
     use_waypoint_bounds: bool = True
-    use_quintic_fan: bool = True
-    fan_steering_samples: int = 9
-    fan_goal_distance_m: float = 5.0
-    fan_goal_offset_m: float = 0.0
 
     def validated(self) -> "PlannerConfig":
         positive = {
@@ -101,7 +93,6 @@ class PlannerConfig:
             "wheelbase_m": self.wheelbase_m,
             "max_steer_rad": self.max_steer_rad,
             "lookahead_min_m": self.lookahead_min_m,
-            "fan_goal_distance_m": self.fan_goal_distance_m,
         }
         bad = [name for name, value in positive.items() if not np.isfinite(value) or value <= 0.0]
         if bad:
@@ -119,13 +110,6 @@ class PlannerConfig:
         bad = [name for name, value in nonnegative.items() if not np.isfinite(value) or value < 0.0]
         if bad:
             raise ValueError(f"off-road planner parameters must be nonnegative: {', '.join(bad)}")
-        if not np.isfinite(self.fan_goal_offset_m):
-            raise ValueError("off-road fan goal offset must be finite")
-        if (isinstance(self.fan_steering_samples, bool)
-                or int(self.fan_steering_samples) != self.fan_steering_samples
-                or self.fan_steering_samples < 3
-                or self.fan_steering_samples % 2 == 0):
-            raise ValueError("off-road fan steering samples must be an odd integer >= 3")
         return self
 
 
@@ -143,9 +127,6 @@ class CandidatePath:
     yaw: np.ndarray
     curvature: np.ndarray
     path_scale: np.ndarray
-    generation_mode: str = "cubic_offset"
-    initial_steer_rad: float = 0.0
-    goal_distance_m: float = 0.0
     feasible: bool = True
     collision: bool = False
     collision_free_length_m: float = 0.0
@@ -440,145 +421,6 @@ class OffRoadPlanner:
         dq[~moving] = 0.0
         ddq[~moving] = 0.0
 
-        return self._candidate_from_profile(
-            index=index,
-            final_offset=final_offset,
-            current_s_mod=current_s_mod,
-            current_s_unwrapped=current_s_unwrapped,
-            ds=ds,
-            q=q,
-            dq=dq,
-            ddq=ddq,
-            generation_mode="cubic_offset",
-            initial_steer_rad=0.0,
-            goal_distance_m=maneuver,
-        )
-
-    @staticmethod
-    def _quintic_coefficients(
-        q0: float,
-        dq0: float,
-        ddq0: float,
-        qf: float,
-        dqf: float,
-        ddqf: float,
-        distance: float,
-    ) -> np.ndarray:
-        """Return q(s) coefficients satisfying position/slope/curvature ends."""
-        h = float(distance)
-        a0 = float(q0)
-        a1 = float(dq0)
-        a2 = 0.5 * float(ddq0)
-        matrix = np.asarray([
-            [h**3, h**4, h**5],
-            [3.0 * h**2, 4.0 * h**3, 5.0 * h**4],
-            [6.0 * h, 12.0 * h**2, 20.0 * h**3],
-        ])
-        rhs = np.asarray([
-            float(qf) - (a0 + a1 * h + a2 * h**2),
-            float(dqf) - (a1 + 2.0 * a2 * h),
-            float(ddqf) - 2.0 * a2,
-        ])
-        a3, a4, a5 = np.linalg.solve(matrix, rhs)
-        return np.asarray([a0, a1, a2, a3, a4, a5])
-
-    @staticmethod
-    def _lateral_second_derivative_for_curvature(
-        q: float,
-        dq: float,
-        base_curvature: float,
-        path_curvature: float,
-    ) -> float:
-        """Invert equation (6) to obtain q'' for a requested path curvature."""
-        one_minus_qk = 1.0 - q * base_curvature
-        if abs(one_minus_qk) <= _EPS:
-            return math.copysign(math.inf, one_minus_qk)
-        scale = math.hypot(dq, one_minus_qk)
-        orientation_sign = 1.0 if one_minus_qk >= 0.0 else -1.0
-        numerator = (
-            scale**2 * (path_curvature * scale / orientation_sign - base_curvature)
-            - base_curvature * dq**2
-        )
-        return numerator / one_minus_qk
-
-    def _generate_fan_candidate(
-        self,
-        index: int,
-        initial_steer_rad: float,
-        current_s_mod: float,
-        current_s_unwrapped: float,
-        current_d: float,
-        heading_error: float,
-    ) -> CandidatePath:
-        """Generate a quintic branch that rejoins the configured base-frame pose."""
-        assert self.base_frame is not None
-        cfg = self.config
-        ds = np.arange(
-            0.0, cfg.path_horizon_m + 0.5 * cfg.path_resolution_m,
-            cfg.path_resolution_m,
-        )
-        goal_distance = min(cfg.fan_goal_distance_m, cfg.path_horizon_m)
-        goal_distance = max(goal_distance, cfg.path_resolution_m)
-        dq0 = math.tan(float(np.clip(
-            heading_error, -math.radians(75.0), math.radians(75.0))))
-        base_curvature = float(self.base_frame.geometry(current_s_mod)[4])
-        requested_curvature = math.tan(initial_steer_rad) / cfg.wheelbase_m
-        ddq0 = self._lateral_second_derivative_for_curvature(
-            current_d, dq0, base_curvature, requested_curvature)
-        coefficients = self._quintic_coefficients(
-            current_d, dq0, ddq0,
-            cfg.fan_goal_offset_m, 0.0, 0.0,
-            goal_distance,
-        )
-
-        u = np.minimum(ds, goal_distance)
-        q = sum(coefficients[power] * u**power for power in range(6))
-        dq = sum(
-            power * coefficients[power] * u ** (power - 1)
-            for power in range(1, 6)
-        )
-        ddq = sum(
-            power * (power - 1) * coefficients[power] * u ** (power - 2)
-            for power in range(2, 6)
-        )
-        finished = ds >= goal_distance
-        q[finished] = cfg.fan_goal_offset_m
-        dq[finished] = 0.0
-        ddq[finished] = 0.0
-
-        return self._candidate_from_profile(
-            index=index,
-            final_offset=cfg.fan_goal_offset_m,
-            current_s_mod=current_s_mod,
-            current_s_unwrapped=current_s_unwrapped,
-            ds=ds,
-            q=q,
-            dq=dq,
-            ddq=ddq,
-            generation_mode="quintic_fan",
-            initial_steer_rad=initial_steer_rad,
-            goal_distance_m=goal_distance,
-        )
-
-    def _candidate_from_profile(
-        self,
-        *,
-        index: int,
-        final_offset: float,
-        current_s_mod: float,
-        current_s_unwrapped: float,
-        ds: np.ndarray,
-        q: np.ndarray,
-        dq: np.ndarray,
-        ddq: np.ndarray,
-        generation_mode: str,
-        initial_steer_rad: float,
-        goal_distance_m: float,
-    ) -> CandidatePath:
-        """Convert one Frenet lateral profile into a fully evaluated geometry."""
-        assert self.base_frame is not None
-        cfg = self.config
-
         s_mod = np.mod(current_s_mod + ds, self.base_frame.length) \
             if self.base_frame.closed else np.clip(current_s_mod + ds, 0.0, self.base_frame.length)
         xb, yb, tx, ty, base_kappa = self.base_frame.geometry(s_mod)
@@ -617,9 +459,6 @@ class OffRoadPlanner:
             yaw=yaw,
             curvature=curvature,
             path_scale=path_scale,
-            generation_mode=generation_mode,
-            initial_steer_rad=float(initial_steer_rad),
-            goal_distance_m=float(goal_distance_m),
             feasible=feasible,
             collision=not feasible,
             collision_free_length_m=0.0 if not feasible else float(ds[-1]),
@@ -717,29 +556,8 @@ class OffRoadPlanner:
         # Equation (18): integral divided by overlap arc-length.
         return float(trapezoid(distance, s_overlap) / max(end - start, _EPS))
 
-    def _safety_costs(
-        self,
-        collisions: np.ndarray,
-        candidates: Optional[Sequence[CandidatePath]] = None,
-    ) -> np.ndarray:
+    def _safety_costs(self, collisions: np.ndarray) -> np.ndarray:
         cfg = self.config
-        if candidates and any(path.generation_mode == "quintic_fan" for path in candidates):
-            # Fan candidates share a terminal offset, so lateral-offset index
-            # distance no longer represents path proximity. Blur collision risk
-            # using the maximum Cartesian separation between complete paths.
-            count = len(candidates)
-            separation = np.zeros((count, count), dtype=float)
-            for i in range(count):
-                for j in range(i + 1, count):
-                    distance = np.hypot(
-                        candidates[i].x - candidates[j].x,
-                        candidates[i].y - candidates[j].y,
-                    )
-                    separation[i, j] = separation[j, i] = float(np.max(distance))
-            weights = np.exp(-0.5 * (separation / cfg.safety_sigma_m) ** 2)
-            return (weights @ collisions.astype(float)) / np.maximum(
-                np.sum(weights, axis=1), _EPS)
-
         radius = max(1, int(math.ceil(4.0 * cfg.safety_sigma_m / cfg.lateral_resolution_m)))
         offset = np.arange(-radius, radius + 1) * cfg.lateral_resolution_m
         kernel = np.exp(-0.5 * (offset / cfg.safety_sigma_m) ** 2)
@@ -785,7 +603,6 @@ class OffRoadPlanner:
             float(pose_arr[0]), float(pose_arr[1]))
         heading_error = _wrap_angle(float(pose_arr[2]) - base_heading)
         current_s_unwrapped = self._unwrap_current_s(current_s)
-        cfg = self.config
         offsets = self._target_offsets(current_s)
         candidates = [
             self._generate_candidate(
@@ -794,22 +611,6 @@ class OffRoadPlanner:
             )
             for i, offset in enumerate(offsets)
         ]
-        if cfg.use_quintic_fan:
-            curvature_steer_limit = math.atan(cfg.wheelbase_m * cfg.max_curvature)
-            steering_limit = min(cfg.max_steer_rad, curvature_steer_limit)
-            steering_samples = np.linspace(
-                -steering_limit,
-                steering_limit,
-                int(cfg.fan_steering_samples),
-            )
-            fan_candidates = [
-                self._generate_fan_candidate(
-                    len(candidates) + i, float(steer), current_s, current_s_unwrapped,
-                    current_d, heading_error,
-                )
-                for i, steer in enumerate(steering_samples)
-            ]
-            candidates.extend(fan_candidates)
 
         if obstacle_points is None:
             points = self._scan_points(pose_arr, ranges, angle_min, angle_increment)
@@ -823,7 +624,8 @@ class OffRoadPlanner:
             [candidate.collision or not candidate.feasible for candidate in candidates],
             dtype=bool,
         )
-        safety = self._safety_costs(collision_flags, candidates)
+        safety = self._safety_costs(collision_flags)
+        cfg = self.config
         for candidate, safety_cost in zip(candidates, safety):
             candidate.safety_cost = float(safety_cost)
             candidate.consistency_cost = self._consistency_cost(candidate)

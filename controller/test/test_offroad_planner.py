@@ -13,6 +13,11 @@ def straight_frame(planner, *, width=None, speed=2.0):
     planner.set_base_frame(x, y, bounds, bounds, np.full_like(x, speed))
 
 
+def branch_displacement(path):
+    index = int(np.argmax(np.abs(path.q)))
+    return float(path.q[index])
+
+
 def test_cubic_lateral_maneuver_satisfies_paper_boundary_conditions():
     config = PlannerConfig(
         use_waypoint_bounds=False,
@@ -34,6 +39,61 @@ def test_cubic_lateral_maneuver_satisfies_paper_boundary_conditions():
     assert (candidate.q[1] - candidate.q[0]) / config.path_resolution_m \
         == pytest.approx(math.tan(heading_error), abs=6.0e-3)
     assert np.max(np.abs(candidate.q[candidate.s_unwrapped >= 3.0] - 0.6)) < 1.0e-12
+
+
+def test_quintic_fan_starts_with_sampled_steering_and_rejoins_raceline_pose():
+    config = PlannerConfig(
+        use_waypoint_bounds=False,
+        path_horizon_m=5.0,
+        path_resolution_m=0.01,
+        fan_goal_distance_m=4.0,
+        max_curvature=3.0,
+    )
+    planner = OffRoadPlanner(config)
+    straight_frame(planner)
+    initial_steer = 0.3
+    candidate = planner._generate_fan_candidate(
+        0, initial_steer, 1.0, 1.0, 0.1, 0.12,
+    )
+
+    assert candidate.generation_mode == "quintic_fan"
+    assert candidate.q[0] == pytest.approx(0.1)
+    assert candidate.yaw[0] == pytest.approx(0.12, abs=2.0e-3)
+    assert candidate.curvature[0] == pytest.approx(
+        math.tan(initial_steer) / config.wheelbase_m, rel=2.0e-3)
+    assert candidate.q[-1] == pytest.approx(0.0, abs=1.0e-10)
+    assert candidate.yaw[-1] == pytest.approx(0.0, abs=1.0e-8)
+    assert candidate.curvature[-1] == pytest.approx(0.0, abs=1.0e-8)
+
+
+def test_fan_samples_bounded_steering_and_legacy_mode_remains_available():
+    fan = OffRoadPlanner(PlannerConfig(
+        use_waypoint_bounds=False,
+        fan_steering_samples=7,
+        max_curvature=3.0,
+    ))
+    straight_frame(fan)
+    fan_result = fan.plan((1.0, 0.0, 0.0), 1.0, [], 0.0, 0.01)
+
+    fan_candidates = [
+        path for path in fan_result.candidates
+        if path.generation_mode == "quintic_fan"
+    ]
+    assert len(fan_candidates) == 7
+    assert any(path.generation_mode == "cubic_offset" for path in fan_result.candidates)
+    assert max(abs(path.initial_steer_rad) for path in fan_candidates) \
+        <= fan.config.max_steer_rad + 1.0e-12
+    assert any(abs(path.initial_steer_rad) < 1.0e-12 for path in fan_candidates)
+
+    legacy = OffRoadPlanner(PlannerConfig(
+        use_quintic_fan=False,
+        use_waypoint_bounds=False,
+        lateral_span_m=1.0,
+    ))
+    straight_frame(legacy)
+    legacy_result = legacy.plan((1.0, 0.0, 0.0), 1.0, [], 0.0, 0.01)
+    assert all(path.generation_mode == "cubic_offset" for path in legacy_result.candidates)
+    assert len({path.final_offset_m for path in legacy_result.candidates}) > 1
 
 
 def test_clear_straight_selects_base_frame_and_full_speed():
@@ -63,12 +123,12 @@ def test_static_obstacle_collision_blur_selects_a_clear_offset_path():
         (1.0, 0.0, 0.0), 0.5, [], 0.0, 0.01,
         obstacle_points=[(4.0, 0.0)],
     )
-    center = min(result.candidates, key=lambda path: abs(path.final_offset_m))
+    center = min(result.candidates, key=lambda path: np.max(np.abs(path.q)))
 
     assert center.collision is True
     assert result.emergency is False
     assert result.selected.collision is False
-    assert abs(result.selected.final_offset_m) >= 0.3
+    assert np.max(np.abs(result.selected.q)) >= 0.3
     assert result.selected.safety_cost < center.safety_cost
     assert result.target_speed_mps < config.max_speed_mps
 
@@ -90,11 +150,35 @@ def test_laserscan_is_converted_to_the_cell_obstacle_map():
         (1.0, 0.0, 0.0), 0.5, ranges,
         -math.pi / 2.0, math.pi / 1080.0,
     )
-    center = min(result.candidates, key=lambda path: abs(path.final_offset_m))
+    center = min(result.candidates, key=lambda path: np.max(np.abs(path.q)))
 
     assert center.collision is True
     assert result.selected.collision is False
-    assert abs(result.selected.final_offset_m) >= 0.3
+    assert np.max(np.abs(result.selected.q)) >= 0.3
+
+
+def test_collision_footprint_is_asymmetric_about_base_link():
+    config = PlannerConfig(
+        use_waypoint_bounds=False,
+        vehicle_front_m=0.45,
+        vehicle_rear_m=0.10,
+        collision_margin_m=0.0,
+        max_curvature=3.0,
+    )
+    planner = OffRoadPlanner(config)
+    straight_frame(planner)
+
+    front_path = planner._generate_candidate(
+        0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+    )
+    planner._check_collision(front_path, np.array([[1.44, 0.0]]))
+    assert front_path.collision is True
+
+    rear_path = planner._generate_candidate(
+        0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+    )
+    planner._check_collision(rear_path, np.array([[0.89, 0.0]]))
+    assert rear_path.collision is False
 
 
 def test_consistency_cost_suppresses_a_sudden_return_to_center():
@@ -110,20 +194,24 @@ def test_consistency_cost_suppresses_a_sudden_return_to_center():
     straight_frame(without_consistency)
     straight_frame(with_consistency)
 
+    first_results = []
     for planner in (without_consistency, with_consistency):
         first = planner.plan(
             (1.0, 0.0, 0.0), 0.5, [], 0.0, 0.01,
             obstacle_points=[(4.0, 0.0)],
         )
-        assert first.selected.final_offset_m < -0.3
+        assert abs(branch_displacement(first.selected)) > 0.3
+        first_results.append(first)
 
     no_consistency_result = without_consistency.plan(
         (1.1, 0.0, 0.0), 0.5, [], 0.0, 0.01, obstacle_points=[])
     consistency_result = with_consistency.plan(
         (1.1, 0.0, 0.0), 0.5, [], 0.0, 0.01, obstacle_points=[])
 
-    assert no_consistency_result.selected.final_offset_m == pytest.approx(0.0, abs=1.0e-9)
-    assert consistency_result.selected.final_offset_m < -0.1
+    assert branch_displacement(no_consistency_result.selected) == pytest.approx(0.0, abs=1.0e-9)
+    assert abs(branch_displacement(consistency_result.selected)) > 0.1
+    assert math.copysign(1.0, branch_displacement(consistency_result.selected)) \
+        == math.copysign(1.0, branch_displacement(first_results[1].selected))
 
 
 def test_all_colliding_candidates_use_longest_free_path_and_emergency_speed():

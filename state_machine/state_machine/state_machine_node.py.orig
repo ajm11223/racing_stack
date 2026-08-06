@@ -1852,10 +1852,6 @@ class StateMachine(Node):
             mrk.color.r = 0.0
             mrk.color.g = 1.0
             mrk.color.b = 1.0
-        elif state == "DWAONLY":
-            mrk.color.r = 1.0
-            mrk.color.g = 0.45
-            mrk.color.b = 0.0
         elif state == "RECOVERY":
             mrk.color.r = 0.0
             mrk.color.g = 1.0

@@ -35,6 +35,10 @@ tracking:
     max_std: 0.2
     min_std: 0.16
     min_nb_meas: 5
+    # 정적 장애물의 size에 적용할 롤링 median 창 [프레임]. 40 Hz 기준 15 = 0.38 s.
+    # d_left/d_right가 size에서 파생되므로 이 값이 하류 clearance 판정의 안정성을
+    # 좌우한다. 1이면 필터 끔(기존 동작).
+    size_median_window: 15
     noMemoryMode: true
     debug_mode: false
     publish_static: true

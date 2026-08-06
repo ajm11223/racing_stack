@@ -9,12 +9,26 @@ Implemented paper stages:
 1. arc-length reparameterized cubic-spline base frame and Newton localization;
 2. cubic lateral-offset candidates with the paper's boundary conditions and
    speed-dependent maneuver length;
-3. curvilinear/Cartesian transformation, nonholonomic curvature rejection, and
+3. an optional quintic curvature fan that augments those candidates: every
+   branch starts with the measured vehicle heading, samples a bounded initial
+   steering angle, and rejoins a common base-frame position, heading, and
+   curvature;
+4. curvilinear/Cartesian transformation, nonholonomic curvature rejection, and
    footprint collision checks against a cell-quantized local LiDAR map;
-4. Gaussian collision-risk, integrated squared-curvature, and previous-path
+5. Gaussian collision-risk, integrated squared-curvature, and previous-path
    consistency costs;
-5. minimum-cost collision-free selection, longest-free-path fallback, and
+6. minimum-cost collision-free selection, longest-free-path fallback, and
    curvature/risk target-speed constraints.
+
+The curvature fan is enabled with `offroad_use_quintic_fan`. It is additive:
+the paper's lateral-offset candidates remain in the search set. Set the
+parameter to `false` to run only the original cubic search. The fan size and
+terminal pose are controlled by `offroad_fan_steering_samples`,
+`offroad_fan_goal_distance_m`, and `offroad_fan_goal_offset_m`. The steering
+sample count must be an odd integer so the zero-steering branch is present.
+
+`offroad_planner.py.backup_pre_quintic_fan_20260806` is the source backup made
+immediately before this extension was applied.
 
 The paper does not specify the low-level path-tracking controller. A Pure
 Pursuit adapter is therefore kept outside `OffRoadPlanner` in
@@ -27,7 +41,9 @@ are not published in the paper. Every such value is exposed under the
 `controller_map.yaml`. The checked-in defaults are scaled for the F1TENTH car
 and must be validated on the target map and vehicle before driving at speed.
 
-Runtime selection is controlled by `offroad_active`, `offroad_speed_mps`, and
-`offroad_timer_sec` in `state_machine_params.yaml`. FTG remains implemented and
-can be restored independently by disabling `offroad_active` and enabling
-`ftg_active`.
+Runtime selection is controlled by `offroad_active` and `offroad_distance_m` in
+`state_machine_params.yaml`. It is limited to a static TRAILING target and
+triggers immediately when the target's front face is within the configured
+distance.
+FTG remains implemented and can be restored independently by disabling
+`offroad_active` and enabling `ftg_active`.

@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
 from spliner.static_lattice_avoidance_node import (
     LatticeApexCandidate,
@@ -29,6 +30,29 @@ def make_planner():
     planner.lattice_safety_sigma = 0.25
     planner.lattice_max_curvature = 1.28
     planner.lattice_consistency_scale = 0.50
+    planner.lattice_use_lidar_bounds = False
+    planner.lattice_lidar_scan_timeout = 0.20
+    planner.lattice_lidar_min_range = 0.05
+    planner.lattice_lidar_max_range = 8.0
+    planner.lattice_lidar_offset_x = 0.0
+    planner.lattice_lidar_offset_y = 0.0
+    planner.lattice_lidar_yaw = 0.0
+    planner.lattice_lidar_wall_band = 0.80
+    planner.lattice_lidar_s_window = 0.35
+    planner.lattice_lidar_min_wall_points = 2
+    planner.lattice_lidar_bound_padding = 0.05
+    planner.lattice_lidar_path_clearance = 0.25
+    planner.latest_scan = None
+    planner.latest_scan_received_sec = None
+    planner.lidar_left_s = np.asarray([], dtype=float)
+    planner.lidar_left_d = np.asarray([], dtype=float)
+    planner.lidar_right_s = np.asarray([], dtype=float)
+    planner.lidar_right_d = np.asarray([], dtype=float)
+    planner.lidar_left_xy = np.empty((0, 2), dtype=float)
+    planner.lidar_right_xy = np.empty((0, 2), dtype=float)
+    planner.lidar_path_points_xy = np.empty((0, 2), dtype=float)
+    planner.lidar_path_tree = None
+    planner._lidar_interval_cache = {}
     planner.previous_selected_path = None
     planner.behavior_state = ""
     planner.post_min_dist = 1.5
@@ -166,6 +190,77 @@ def test_track_clearance_uses_configured_constant_margin():
         wpnt.d_left = 1.0
 
     clearance = planner._minimum_path_clearance(path, [], gb_wpnts)
+
+    assert clearance == pytest.approx(-0.05)
+
+
+def test_lidar_bounds_shrink_global_corridor_with_per_side_fallback():
+    planner = make_planner()
+    planner.lattice_use_lidar_bounds = True
+    planner.gb_max_s = 100.0
+    planner.lidar_left_s = np.asarray([4.90, 5.10])
+    planner.lidar_left_d = np.asarray([0.70, 0.72])
+
+    lower, upper = planner._effective_track_interval(5.0, -1.0, 1.0)
+
+    assert lower == pytest.approx(-1.0)
+    assert upper == pytest.approx(0.654)
+
+
+def test_lidar_bounds_replace_global_corridor_even_when_measured_outside():
+    planner = make_planner()
+    planner.lattice_use_lidar_bounds = True
+    planner.gb_max_s = 100.0
+    planner.lidar_left_s = np.asarray([4.90, 5.10])
+    planner.lidar_left_d = np.asarray([1.20, 1.22])
+    planner.lidar_right_s = np.asarray([4.90, 5.10])
+    planner.lidar_right_d = np.asarray([-1.22, -1.20])
+
+    lower, upper = planner._effective_track_interval(5.0, -1.0, 1.0)
+
+    assert lower == pytest.approx(-1.154)
+    assert upper == pytest.approx(1.154)
+
+
+def test_fresh_scan_is_transformed_into_left_and_right_frenet_bounds():
+    planner = make_planner()
+    planner.lattice_use_lidar_bounds = True
+    planner.lattice_lidar_min_wall_points = 1
+    planner.cur_x = 0.0
+    planner.cur_y = 0.0
+    planner.cur_yaw = 0.0
+    planner.cur_s = 0.0
+    planner.gb_max_s = 100.0
+    planner.converter = StraightConverter()
+    planner.latest_scan_received_sec = 10.0
+    planner.latest_scan = SimpleNamespace(
+        ranges=[1.0, 1.0],
+        angle_min=-math.pi / 2.0,
+        angle_increment=math.pi,
+    )
+    planner.get_clock = lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=int(10.0e9))
+    )
+    gb_wpnts = make_global_waypoints()
+    for wpnt in gb_wpnts:
+        wpnt.d_left = 1.0
+        wpnt.d_right = 1.0
+
+    refreshed = planner._refresh_lidar_track_bounds(gb_wpnts)
+
+    assert refreshed
+    assert planner.lidar_left_d == pytest.approx([1.0])
+    assert planner.lidar_right_d == pytest.approx([-1.0])
+    assert planner.lidar_path_tree is not None
+
+
+def test_raw_lidar_points_are_a_hard_constraint_on_completed_path():
+    planner = make_planner()
+    planner.lattice_use_lidar_bounds = True
+    planner.lidar_path_tree = cKDTree(np.asarray([[5.0, 0.20]]))
+    path = make_path(np.zeros(101))
+
+    clearance = planner._lidar_path_residual_clearance(path)
 
     assert clearance == pytest.approx(-0.05)
 

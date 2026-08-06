@@ -12,9 +12,32 @@ static_lattice_avoidance_planner:
     # 아래 값은 모두 차량 중심에서 원본 경계까지 확보할 최종 거리이다.
     # 차량 폭과 별도 여유를 내부에서 추가하지 않고 이 상수를 그대로 쓴다.
     # ========================================================================
-    lattice_track_boundary_margin: 0.24   # 차량 중심~트랙 경계 거리 [m]
-    lattice_obstacle_boundary_margin: 0.25 # 차량 중심~장애물 경계 거리 [m]
+    # 상태머신도 state_machine/config/planners/static_avoidance_planner.yaml에서
+    # 같은 검사를 자기 상수로 다시 수행한다. 두 값이 다르면(과거: 여기 0.25 /
+    # 상태머신 0.30) 플래너가 낸 경로의 절반 이상을 상태머신이 되차단해
+    # TRAILING<->OVERTAKE가 진동한다. 반드시 그쪽과 같은 값을 유지할 것.
+    lattice_track_boundary_margin: 0.25    # 차량 중심~트랙 경계 거리 [m]
+    lattice_obstacle_boundary_margin: 0.30 # 차량 중심~장애물 경계 거리 [m]
     kernel_size: 5              # occupancy map 경계 erosion 크기; 클수록 보수적
+
+    # ========================================================================
+    # 실측 LiDAR 트랙 경계 보정
+    # 현재 scan에서 벽이 관측된 쪽은 global waypoint의 d_left/d_right를
+    # 넘어가더라도 실측 LiDAR 경계를 그대로 사용한다. 한쪽 벽이 안 보일 때만
+    # 그쪽을 global 경계로 fallback한다.
+    # ========================================================================
+    lattice_use_lidar_bounds: true          # true: /scan으로 국소 트랙 경계 보정
+    lattice_lidar_scan_timeout_s: 0.20      # 이보다 오래된 scan은 사용하지 않음 [s]
+    lattice_lidar_min_range_m: 0.05         # 너무 가까운 invalid/noise return 제거 [m]
+    lattice_lidar_max_range_m: 8.0          # 경계·경로 검사에 쓸 최대 scan 거리 [m]
+    lattice_lidar_offset_x_m: 0.27          # base_link 기준 LiDAR 전방(+)/후방(-) [m]
+    lattice_lidar_offset_y_m: 0.0           # base_link 기준 LiDAR 좌측(+)/우측(-) [m]
+    lattice_lidar_yaw_rad: 0.0              # base_link 전방축 기준 LiDAR yaw [rad]
+    lattice_lidar_wall_band_m: 0.80         # global 경계 주변에서 벽으로 볼 d 대역 [m]
+    lattice_lidar_s_window_m: 0.35          # 각 경계 질의에 모을 앞뒤 Frenet s 폭 [m]
+    lattice_lidar_min_wall_points: 2        # 한쪽 실측 경계를 채택할 최소 scan 점 수
+    lattice_lidar_bound_padding_m: 0.05     # 실측 벽에서 경로 쪽으로 추가 축소 [m]
+    lattice_lidar_path_clearance_m: 0.25    # 완성 경로 중심~raw scan 최소 거리 [m]
 
     # ========================================================================
     # 장애물 선택 및 apex 샘플링
@@ -24,7 +47,12 @@ static_lattice_avoidance_planner:
     lattice_max_obstacles: 3         # 한 번에 처리할 최대 장애물 수; 구현상 최대 3
     lattice_d_resolution: 0.20       # 같은 자유구간 내 기준점 횡간격 [m]
     lattice_max_samples_per_side: 5  # 자유구간당 최대 기준점 수
-    lattice_min_free_width: 0.50     # margin 적용 후 0.5m 미만이면 샘플링하지 않음
+    # 자유구간 폭이 이 값 미만이면 후보를 만들지 않는다. 폭 1.0 m 미만일 때
+    # _sample_free_interval은 정중앙 1점만 놓으므로 하드제약 통과 조건은
+    # width > 2*obstacle_boundary_margin 이다. 이 값을 그보다 작게 두면 그 사이
+    # 폭에서는 후보가 생성되되 항상 기각된다 — 대신 로그의 min_clearance로
+    # "얼마나 모자랐는지"가 남으므로 진단에는 유리하다.
+    lattice_min_free_width: 0.50
     lattice_longitudinal_margin: 0.40 # 충돌 검사 시 장애물 앞뒤 추가 여유 [m]
 
     # ========================================================================
@@ -38,8 +66,13 @@ static_lattice_avoidance_planner:
 
     lattice_safety_sigma: 0.2       # Gaussian 안전비용의 영향 거리 [m]
                                      # 높이면 장애물에서 더 일찍/멀리 떨어짐
-    lattice_max_curvature: 1.8      # 허용 최대 절대 곡률 [1/m]
-                                     # wheelbase 0.33 m, max steer 0.4 rad 기준
+    # 허용 최대 절대 곡률 [1/m]. wheelbase 0.33 m, max steer 0.4 rad 기준으로
+    # tan(0.4)/0.33 = 1.28. 이전 값 1.8은 조향 상한(0.5 rad -> 1.55)마저 넘어
+    # 물리적으로 낼 수 없는 곡률을 통과시켰다.
+    # 주의: smoothness 비용이 (kappa/이 값)^2로 정규화되므로, 이 값을 내리면
+    # smoothness 항이 (1.8/1.28)^2 = 1.98배로 커진다. 즉 아래 weight를 그대로
+    # 두면 안전(여유)보다 직진성을 선호하는 쪽으로 선택이 기운다.
+    lattice_max_curvature: 1.8
     lattice_consistency_scale: 0.50  # 이전 경로 차이를 정규화하는 횡거리 [m]
                                      # 낮을수록 경로 변경에 더 큰 비용 부여
 
@@ -50,6 +83,22 @@ static_lattice_avoidance_planner:
     # ========================================================================
     post_min_dist: 1.5          # 최소 복귀 거리 [m]; 급복귀 시 2.0 이상 검토
     post_max_dist: 5.0          # 최대 복귀 거리 [m]; 경로가 너무 길면 감소
+
+    # ========================================================================
+    # 회피 경로 속도 (곡률 기반)
+    # 레이스라인 속도 프로파일은 레이스라인 곡률에 맞춰 최적화된 값이다. 회피
+    # 스플라인은 그보다 반드시 더 굽으므로, 같은 속도를 그대로 쓰면 타이어가
+    # 낼 수 없는 횡가속을 요구하고 좁은 구간에서 차가 밖으로 밀린다.
+    # speed sector와 달리 장애물이 없으면 애초에 경로가 발행되지 않으므로
+    # 깨끗한 랩은 전체 레이스라인 속도를 그대로 유지한다.
+    # ========================================================================
+    lattice_speed_from_curvature: true  # false로 두면 기존 동작(GB 속도 그대로)
+    lattice_max_lat_acc_mps2: 4.5       # 횡가속 예산. CAR/veh_dyn_info/ggv.csv의
+                                        # ay_max_mps2와 맞출 것 (현재 4.5)
+    lattice_max_lon_dec_mps2: 5.0       # 역방향 전파에 쓰는 감속 한계.
+                                        # ax_max_machines.csv 기준 (현재 5.0)
+    lattice_min_speed_mps: 1.5          # 곡률 상한이 만드는 속도의 하한.
+                                        # 수치 스파이크로 정지 명령이 나가는 것 방지
 
     # true이면 lattice 최적경로 대신 기존 single-apex spline 출력을 사용한다.
     # 비교/비상 테스트용이며 정상 lattice 주행에서는 false로 유지한다.
